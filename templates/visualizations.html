@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Visualizations - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Visualizations</h1>
+<p class="subtitle">Same data as the dashboard's tables, charted.</p>
+
+<div class="panel">
+  <form method="get" class="row" style="align-items:flex-end;">
+    <div class="field">
+      <label for="location">Filter by location</label>
+      <select name="location" id="location" onchange="this.form.submit()">
+        <option value="">All locations</option>
+        {% for l in all_locations %}
+        <option value="{{ l.name }}" {{ "selected" if selected_location == l.name }}>{{ l.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="sku">Filter by SKU</label>
+      <select name="sku" id="sku" onchange="this.form.submit()">
+        <option value="">All SKUs</option>
+        {% for p in all_products %}
+        <option value="{{ p.sku_code }}" {{ "selected" if selected_sku == p.sku_code }}>{{ p.sku_code }}{% if p.sku_desc %} -- {{ p.sku_desc[:40] }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if selected_location or selected_sku %}
+    <div class="field" style="flex:0;">
+      <a href="{{ url_for('visualizations') }}">Clear filters</a>
+    </div>
+    {% endif %}
+  </form>
+  <p class="subtitle" style="margin:10px 0 0;">Location and SKU filter the stock and damage charts (SKU also narrows the flavor-popularity chart). PO-by-facility and flavor popularity aren't location-scoped -- POs aren't tied to a Drizzl warehouse.</p>
+</div>
+
+<div class="panel">
+  {% if charts.stock.labels %}
+  <div class="chart-wrap"><canvas id="stockChart"></canvas></div>
+  {% else %}
+  <p class="empty">{{ "No stock matches this filter." if (selected_location or selected_sku) else "No movements recorded yet." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  {% if charts.po_by_facility.labels %}
+  <div class="chart-wrap"><canvas id="poByFacilityChart"></canvas></div>
+  {% else %}
+  <p class="empty">No parsed PO to chart yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  {% if charts.flavor_popularity.labels %}
+  <div class="chart-wrap"><canvas id="flavorPopularityChart"></canvas></div>
+  {% else %}
+  <p class="empty">No parsed PO to chart yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  {% if charts.damage_cause.labels %}
+  <div class="chart-wrap"><canvas id="damageCauseChart"></canvas></div>
+  {% else %}
+  <p class="empty">{{ "No damage matches this filter." if (selected_location or selected_sku) else "No damage recorded yet." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  {% if charts.damage_trend.labels %}
+  <div class="chart-wrap"><canvas id="damageTrendChart"></canvas></div>
+  {% else %}
+  <p class="empty">No damage to chart yet.</p>
+  {% endif %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>window.DASHBOARD_CHARTS = {{ charts | tojson }};</script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+{% endblock %}

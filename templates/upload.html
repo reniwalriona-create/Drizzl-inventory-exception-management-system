@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Upload - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Upload a document</h1>
+<p class="subtitle">POs, GRNs, and Discrepancy Notes are parsed automatically and added to the ledger. Anything that doesn't add up gets flagged for review on the dashboard, not silently dropped or silently trusted.</p>
+
+<div class="panel">
+  <form method="post" enctype="multipart/form-data">
+    <div class="field">
+      <label for="doc_type">Document type</label>
+      <select name="doc_type" id="doc_type" required>
+        <option value="" disabled selected>Choose one&hellip;</option>
+        {% for key, (label, ext) in doc_types.items() %}
+        <option value="{{ key }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="file">File</label>
+      <input type="file" name="file" id="file" required>
+    </div>
+    <button type="submit">Upload &amp; process</button>
+  </form>
+</div>
+{% endblock %}

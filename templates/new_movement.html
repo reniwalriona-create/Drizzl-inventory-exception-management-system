@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}Log movement - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Log a stock movement</h1>
+<p class="subtitle">For anything with no paperwork: production runs, flea-market withdrawals, consignment transfers to a sales associate before any PO exists, or fixing a count. Movement types: <strong>production</strong> (new stock, no source location), <strong>opening balance</strong> (starting stock as of a given date -- use this instead of production so it isn't counted as newly manufactured), <strong>transfer</strong> (moves between locations, still Drizzl's), <strong>sale</strong> (leaves Drizzl's books), <strong>loss</strong> (damaged/expired/missing).</p>
+
+{% if pending %}
+<div class="panel" style="border-color: {{ 'var(--error)' if pending.severity == 'negative' else 'var(--warn)' }};">
+  {% if pending.severity == 'negative' %}
+  <h2 style="margin-top:0; color: var(--error);">&#9888; This movement will create negative inventory</h2>
+  <table style="margin-bottom:16px;">
+    <tr><th>SKU</th><td>{{ pending.sku_code }}</td></tr>
+    <tr><th>Location</th><td>{{ pending.location_from }}</td></tr>
+    <tr><th>Available (on hand)</th><td>{{ "%.0f"|format(pending.available) }}</td></tr>
+    <tr><th>Requested ({{ pending.movement_type }})</th><td>{{ "%.0f"|format(pending.quantity) }}</td></tr>
+    <tr><th>On hand afterward</th><td class="neg">{{ "%.0f"|format(pending.resulting) }}</td></tr>
+  </table>
+  <p class="subtitle">This usually means an earlier production, transfer, or opening-balance entry is missing rather than that this movement itself is wrong. You can continue anyway -- the movement will be saved and the resulting negative balance will be flagged on the dashboard until investigated.</p>
+  {% else %}
+  <h2 style="margin-top:0; color: var(--warn);">&#9888; This movement will use inventory committed to an open PO</h2>
+  <table style="margin-bottom:16px;">
+    <tr><th>SKU</th><td>{{ pending.sku_code }}</td></tr>
+    <tr><th>Location</th><td>{{ pending.location_from }}</td></tr>
+    <tr><th>On hand</th><td>{{ "%.0f"|format(pending.available) }}</td></tr>
+    <tr><th>Committed (open PO)</th><td>{{ "%.0f"|format(pending.committed) }}</td></tr>
+    <tr><th>Uncommitted (before)</th><td>{{ "%.0f"|format(pending.available - pending.committed) }}</td></tr>
+    <tr><th>Requested ({{ pending.movement_type }})</th><td>{{ "%.0f"|format(pending.quantity) }}</td></tr>
+    <tr><th>On hand afterward</th><td>{{ "%.0f"|format(pending.resulting) }} (not negative)</td></tr>
+    <tr><th>Commitment shortfall afterward</th><td class="neg">{{ "%.0f"|format(pending.shortfall) }}</td></tr>
+  </table>
+  <p class="subtitle">Physical inventory stays positive, but this location currently has less open-PO commitment than {{ "%.0f"|format(pending.committed) }} units reserved -- doing this movement means the business may not have enough stock left to fulfill that PO. This is a lighter warning than negative physical inventory. You can continue anyway -- the movement will be saved and the shortfall will be flagged on the dashboard until investigated.</p>
+  {% endif %}
+  <form method="post">
+    <input type="hidden" name="confirmed_override" value="1">
+    <input type="hidden" name="severity" value="{{ pending.severity }}">
+    <input type="hidden" name="movement_date" value="{{ pending.movement_date }}">
+    <input type="hidden" name="sku_code" value="{{ pending.sku_code }}">
+    <input type="hidden" name="sku_desc" value="{{ pending.sku_desc }}">
+    <input type="hidden" name="quantity" value="{{ pending.quantity }}">
+    <input type="hidden" name="movement_type" value="{{ pending.movement_type }}">
+    <input type="hidden" name="location_from" value="{{ pending.location_from }}">
+    <input type="hidden" name="location_to" value="{{ pending.location_to }}">
+    <input type="hidden" name="location_from_type" value="{{ pending.location_from_type }}">
+    <input type="hidden" name="location_to_type" value="{{ pending.location_to_type }}">
+    <input type="hidden" name="reason" value="{{ pending.reason }}">
+    <input type="hidden" name="notes" value="{{ pending.notes }}">
+    <div class="field">
+      <label for="override_reason">Reason for override</label>
+      <input type="text" name="override_reason" id="override_reason" placeholder="e.g. &quot;Opening balance not yet entered&quot;" required autofocus>
+    </div>
+    <button type="submit">Continue Anyway</button>
+    <a href="{{ url_for('new_movement') }}" style="margin-left:14px;">Cancel</a>
+  </form>
+</div>
+{% else %}
+<div class="panel">
+  <form method="post">
+    <div class="row">
+      <div class="field">
+        <label for="movement_date">Date</label>
+        <input type="date" name="movement_date" id="movement_date" required>
+      </div>
+      <div class="field">
+        <label for="movement_type">Movement type</label>
+        <select name="movement_type" id="movement_type" required>
+          {% for t in movement_types %}
+          <option value="{{ t }}">{{ t.replace('_', ' ') }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="sku_code">SKU code</label>
+        <input type="text" name="sku_code" id="sku_code" list="sku_list" required>
+        <datalist id="sku_list">
+          {% for p in products %}
+          <option value="{{ p.sku_code }}">{{ p.sku_desc or "" }}</option>
+          {% endfor %}
+        </datalist>
+      </div>
+      <div class="field">
+        <label for="sku_desc">SKU description (only needed for a brand new SKU)</label>
+        <input type="text" name="sku_desc" id="sku_desc">
+      </div>
+      <div class="field">
+        <label for="quantity">Quantity</label>
+        <input type="number" name="quantity" id="quantity" min="0.01" step="any" required>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="location_from">From location <span id="from_hint" class="badge" style="display:none;"></span></label>
+        <input type="text" name="location_from" id="location_from" list="location_list">
+      </div>
+      <div class="field">
+        <label for="location_from_type">New "from" location's type</label>
+        <select name="location_from_type" id="location_from_type">
+          {% for t in location_types %}
+          <option value="{{ t }}">{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="location_to">To location <span id="to_hint" class="badge" style="display:none;"></span></label>
+        <input type="text" name="location_to" id="location_to" list="location_list">
+      </div>
+      <div class="field">
+        <label for="location_to_type">New "to" location's type</label>
+        <select name="location_to_type" id="location_to_type">
+          {% for t in location_types %}
+          <option value="{{ t }}">{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <datalist id="location_list">
+      {% for l in locations %}
+      <option value="{{ l.name }}">{{ l.type }}</option>
+      {% endfor %}
+    </datalist>
+
+    <div class="field">
+      <label for="reason">Reason (e.g. "flea_market", "consignment_transfer", "damaged")</label>
+      <input type="text" name="reason" id="reason">
+    </div>
+    <div class="field">
+      <label for="notes">Notes</label>
+      <textarea name="notes" id="notes" rows="2"></textarea>
+    </div>
+
+    <button type="submit">Record movement</button>
+  </form>
+</div>
+{% endif %}
+
+<h2>Recent movements</h2>
+<div class="panel">
+  <form method="get" class="row" style="align-items:flex-end;">
+    <div class="field">
+      <label for="filter_location">Filter by location</label>
+      <select name="location" id="filter_location" onchange="this.form.submit()">
+        <option value="">All locations</option>
+        {% for l in locations %}
+        <option value="{{ l.name }}" {{ "selected" if selected_location == l.name }}>{{ l.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="filter_sku">Filter by SKU</label>
+      <select name="sku" id="filter_sku" onchange="this.form.submit()">
+        <option value="">All SKUs</option>
+        {% for p in products %}
+        <option value="{{ p.sku_code }}" {{ "selected" if selected_sku == p.sku_code }}>{{ p.sku_code }}{% if p.sku_desc %} -- {{ p.sku_desc[:40] }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if selected_location or selected_sku %}
+    <div class="field" style="flex:0;">
+      <a href="{{ url_for('new_movement') }}">Clear filters</a>
+    </div>
+    {% endif %}
+  </form>
+</div>
+<div class="panel">
+  {% if recent %}
+  <table>
+    <tr><th>Date</th><th>Type</th><th>SKU</th><th>Qty</th><th>From</th><th>To</th><th>Reason</th><th>Reference</th><th></th></tr>
+    {% for m in recent %}
+    <tr{% if m.voided %} style="opacity:0.6;"{% endif %}>
+      <td>{{ m.movement_date }}</td>
+      <td>{{ m.movement_type }}</td>
+      <td>{{ m.sku_code }}</td>
+      <td>{{ "%.0f"|format(m.quantity) }}</td>
+      <td>{{ m.from_name or "" }}</td>
+      <td>{{ m.to_name or "" }}</td>
+      <td>{{ m.reason or "" }}</td>
+      <td>{{ m.reference_type }}{% if m.reference_id %} / {{ m.reference_id }}{% endif %}</td>
+      <td>
+        {% if m.voided %}
+        <span class="badge" title="{{ m.void_reason }}">VOIDED</span>
+        {% if m.reference_type == "manual" %}
+        <form method="post" action="{{ url_for('restore_movement_route', movement_id=m.id) }}" style="margin:4px 0 0;">
+          <button type="submit" class="link">Restore</button>
+        </form>
+        {% endif %}
+        {% elif m.reference_type == "manual" %}
+        <form method="post" action="{{ url_for('void_movement_route', movement_id=m.id) }}" style="margin:0;"
+              onsubmit="return confirm('Void this {{ m.movement_type }} movement? It stays visible here, just excluded from every calculation -- restorable anytime.');">
+          <input type="text" name="reason" placeholder="Reason" required style="width:100px; display:inline-block; padding:4px 6px; margin-bottom:4px;">
+          <button type="submit" class="link">Void</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No movements match this filter." if (selected_location or selected_sku) else "No movements yet." }}</p>
+  {% endif %}
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    var typeSelect = document.getElementById("movement_type");
+    var fromField = document.getElementById("location_from");
+    var toField = document.getElementById("location_to");
+    var fromHint = document.getElementById("from_hint");
+    var toHint = document.getElementById("to_hint");
+
+    function today() {
+      var d = new Date();
+      return d.toISOString().slice(0, 10);
+    }
+    document.getElementById("movement_date").value = today();
+
+    // Which location(s) each movement type actually needs -- must match
+    // the server-side check in app.py's new_movement(). A movement saved
+    // with neither location is invisible to the dashboard, so these are
+    // enforced here (the browser won't let you submit without them) AND
+    // re-checked on the server (in case JS is off or bypassed).
+    var NEEDS_FROM = ["transfer", "sale", "loss"];
+    var NEEDS_TO = ["transfer", "production", "opening_balance"];
+
+    // Which location(s) each movement type must NOT have. A location on
+    // the wrong side double-counts (inflow at "To" + outflow at "From"
+    // for the same movement) and can silently cancel out on the
+    // dashboard -- this actually happened with a production entry that
+    // had From == To. Disable and clear the field so it can't happen
+    // again from the form.
+    var FORBID_FROM = ["production", "opening_balance"];
+    var FORBID_TO = ["sale", "loss"];
+
+    function applyHints() {
+      var t = typeSelect.value;
+      var fromRequired = NEEDS_FROM.indexOf(t) !== -1;
+      var toRequired = NEEDS_TO.indexOf(t) !== -1;
+      var fromForbidden = FORBID_FROM.indexOf(t) !== -1;
+      var toForbidden = FORBID_TO.indexOf(t) !== -1;
+
+      fromField.required = fromRequired;
+      fromField.disabled = fromForbidden;
+      if (fromForbidden) fromField.value = "";
+      fromField.placeholder = fromForbidden ? "(not used for " + t + ")" : fromRequired ? "" : "(leave blank)";
+      fromHint.style.display = (fromRequired || fromForbidden) ? "inline-block" : "none";
+      fromHint.textContent = fromForbidden ? "not needed" : "required";
+
+      toField.required = toRequired;
+      toField.disabled = toForbidden;
+      if (toForbidden) toField.value = "";
+      toField.placeholder = toForbidden ? "(not used for " + t + ")" : toRequired ? "" : "(leave blank)";
+      toHint.style.display = (toRequired || toForbidden) ? "inline-block" : "none";
+      toHint.textContent = toForbidden ? "not needed" : "required";
+    }
+    typeSelect.addEventListener("change", applyHints);
+    applyHints();
+  });
+</script>
+{% endblock %}

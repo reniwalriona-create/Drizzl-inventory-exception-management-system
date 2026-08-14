@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Look up document - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Look up a PO, GRN, or Discrepancy Note</h1>
+<p class="subtitle">Type any one of the three numbers and it pulls the whole chain: the PO, every GRN delivered against it, any Discrepancy Notes, the ledger movements they created, and any flags raised while parsing them.</p>
+
+<div class="panel">
+  <form method="get" class="row" style="align-items:flex-end;">
+    <div class="field">
+      <label for="q">PO / GRN / Discrepancy Note number</label>
+      <input type="text" name="q" id="q" value="{{ query or '' }}" autofocus>
+    </div>
+    <div class="field" style="flex:0;">
+      <button type="submit">Look up</button>
+    </div>
+  </form>
+</div>
+
+{% if query and not result %}
+<div class="panel">
+  <p class="empty">No PO, GRN, or Discrepancy Note found with number "{{ query }}".</p>
+</div>
+{% endif %}
+
+{% if result %}
+
+{% if result.po %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:flex-start;">
+    <h2 style="margin-top:0;">Purchase Order {{ result.po.po_number }}</h2>
+    {% if result.po.voided %}
+    <form method="post" action="{{ url_for('restore_po_route', po_number=result.po.po_number) }}">
+      <button type="submit">Restore PO</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('void_po_route', po_number=result.po.po_number) }}" class="row" style="align-items:flex-end;"
+          onsubmit="return confirm('Void PO {{ result.po.po_number }}? It stays visible here, just excluded from every calculation -- restorable anytime.');">
+      <div class="field" style="margin-bottom:0;">
+        <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
+      </div>
+      <button type="submit" style="background: var(--warn);">Void PO</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if result.po.voided %}
+  <p class="flash flash-warning">VOIDED{% if result.po.voided_at %} ({{ result.po.voided_at }}){% endif %}: {{ result.po.void_reason }}</p>
+  {% endif %}
+  <p class="subtitle" style="margin:0 0 10px;">
+    Date: {{ result.po.po_date or "" }} &middot;
+    Facility: {{ result.po.facility_name or "unknown" }} &middot;
+    Expected delivery: {{ result.po.expected_delivery_date or "" }} &middot;
+    Expires: {{ result.po.po_expiry_date or "" }} &middot;
+    Grand total: {{ result.po.grand_total if result.po.grand_total is not none else "" }}
+  </p>
+  <p class="subtitle" style="margin:0 0 10px; display:flex; align-items:center; gap:10px;">
+    Source location: {% if result.po.source_location %}<strong>{{ result.po.source_location }}</strong>{% else %}<span class="badge">Not allocated</span>{% endif %}
+    <form method="post" action="{{ url_for('assign_po_location_route', po_number=result.po.po_number) }}" style="margin:0; display:inline-flex; gap:6px;">
+      <select name="source_location" style="width:140px; padding:4px 6px;">
+        <option value="">{{ "change to..." if result.po.source_location else "choose..." }}</option>
+        {% for l in all_locations %}
+        <option value="{{ l.name }}">{{ l.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="link">Set</button>
+    </form>
+  </p>
+  {% if result.po.line_items %}
+  <table>
+    <tr><th>SKU</th><th>Description</th><th>Qty</th><th>MRP</th><th>Total</th></tr>
+    {% for li in result.po.line_items %}
+    <tr>
+      <td>{{ li.item_code }}</td>
+      <td>{{ li.item_desc or "" }}</td>
+      <td>{{ "%.0f"|format(li.qty) if li.qty is not none else "" }}</td>
+      <td>{{ li.mrp if li.mrp is not none else "" }}</td>
+      <td>{{ li.total if li.total is not none else "" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No line items parsed for this PO.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if result.grns %}
+{% for grn in result.grns %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:flex-start;">
+    <h2 style="margin-top:0;">GRN {{ grn.grn_number }}{% if grn.po_number %} <span class="badge">PO {{ grn.po_number }}</span>{% endif %}</h2>
+    {% if grn.voided %}
+    <form method="post" action="{{ url_for('restore_grn_route', grn_number=grn.grn_number) }}">
+      <button type="submit">Restore GRN</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('void_grn_route', grn_number=grn.grn_number) }}" class="row" style="align-items:flex-end;"
+          onsubmit="return confirm('Void GRN {{ grn.grn_number }}? This also voids the sale movement(s) it created -- everything stays visible here, just excluded from every calculation, and restorable anytime.');">
+      <div class="field" style="margin-bottom:0;">
+        <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
+      </div>
+      <button type="submit" style="background: var(--warn);">Void GRN</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if grn.voided %}
+  <p class="flash flash-warning">VOIDED{% if grn.voided_at %} ({{ grn.voided_at }}){% endif %}: {{ grn.void_reason }}</p>
+  {% endif %}
+  <p class="subtitle" style="margin:0 0 10px;">
+    GRN date: {{ grn.grn_date or "" }} &middot;
+    Facility: {{ grn.facility_name or "unknown" }} &middot;
+    Invoice: {{ grn.invoice_no or "" }} &middot;
+    Challan: {{ grn.challan_no or "" }}
+  </p>
+  <p class="subtitle" style="margin:0 0 10px; display:flex; align-items:center; gap:10px;">
+    {% if grn.source_location %}
+    Sale movement source: <strong>{{ grn.source_location }}</strong>
+    {% else %}
+    <span class="badge" style="background: var(--warn-bg); color: var(--warn);">Needs source allocation</span>
+    <span>-- no sale movement created yet for this GRN's received units.</span>
+    {% endif %}
+    <form method="post" action="{{ url_for('assign_grn_location_route', grn_number=grn.grn_number) }}" style="margin:0; display:inline-flex; gap:6px;">
+      <select name="source_location" style="width:140px; padding:4px 6px;">
+        <option value="">{{ "override with..." if grn.source_location else "choose..." }}</option>
+        {% for l in all_locations %}
+        <option value="{{ l.name }}">{{ l.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="link">Set</button>
+    </form>
+  </p>
+  {% if grn.line_items %}
+  <table>
+    <tr><th>SKU</th><th>Description</th><th>Expected</th><th>Received</th></tr>
+    {% for li in grn.line_items %}
+    <tr>
+      <td>{{ li.sku_code }}</td>
+      <td>{{ li.sku_desc or "" }}</td>
+      <td>{{ "%.0f"|format(li.expected_qty) if li.expected_qty is not none else "" }}</td>
+      <td>{{ "%.0f"|format(li.received_qty) if li.received_qty is not none else "" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No line items parsed for this GRN.</p>
+  {% endif %}
+
+  <h2>Ledger movements from this GRN</h2>
+  {% if grn.movements %}
+  <table>
+    <tr><th>Date</th><th>Type</th><th>SKU</th><th>Qty</th><th>From</th><th>To</th><th></th></tr>
+    {% for m in grn.movements %}
+    <tr>
+      <td>{{ m.movement_date }}</td>
+      <td>{{ m.movement_type }}</td>
+      <td>{{ m.sku_code }}</td>
+      <td>{{ "%.0f"|format(m.quantity) }}</td>
+      <td>{{ m.from_name or "" }}</td>
+      <td>{{ m.to_name or "" }}</td>
+      <td>{% if m.voided %}<span class="badge">VOIDED</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No movements created from this GRN.</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if result.discrepancy_notes %}
+{% for dn in result.discrepancy_notes %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between; align-items:flex-start;">
+    <h2 style="margin-top:0;">Discrepancy Note {{ dn.dn_number }}{% if dn.grn_number %} <span class="badge">GRN {{ dn.grn_number }}</span>{% endif %}</h2>
+    {% if dn.voided %}
+    <form method="post" action="{{ url_for('restore_discrepancy_note_route', dn_number=dn.dn_number) }}">
+      <button type="submit">Restore Discrepancy Note</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('void_discrepancy_note_route', dn_number=dn.dn_number) }}" class="row" style="align-items:flex-end;"
+          onsubmit="return confirm('Void Discrepancy Note {{ dn.dn_number }}? It stays visible here, just excluded from every calculation -- restorable anytime.');">
+      <div class="field" style="margin-bottom:0;">
+        <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
+      </div>
+      <button type="submit" style="background: var(--warn);">Void Discrepancy Note</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if dn.voided %}
+  <p class="flash flash-warning">VOIDED{% if dn.voided_at %} ({{ dn.voided_at }}){% endif %}: {{ dn.void_reason }}</p>
+  {% endif %}
+  <p class="subtitle" style="margin:0 0 10px;">
+    Date: {{ dn.dn_date or "" }} &middot;
+    DN amount: {{ dn.dn_amt if dn.dn_amt is not none else "" }}
+  </p>
+  {% if dn.line_items %}
+  <table>
+    <tr><th>SKU</th><th>Description</th><th>Reason</th><th>Remarks</th><th>DN Qty</th></tr>
+    {% for li in dn.line_items %}
+    <tr>
+      <td>{{ li.sku_code }}</td>
+      <td>{{ li.sku_desc or "" }}</td>
+      <td>{{ li.reason or "" }}</td>
+      <td>{{ li.remarks or "" }}</td>
+      <td>{{ "%.0f"|format(li.dn_qty) if li.dn_qty is not none else "" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No line items parsed for this Discrepancy Note.</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if result.flags %}
+<div class="panel">
+  <h2 style="margin-top:0;">Flags raised while parsing these documents</h2>
+  <table>
+    <tr><th>Type</th><th>Document</th><th>Issue</th><th>Resolved</th></tr>
+    {% for f in result.flags %}
+    <tr>
+      <td>{{ f.document_type }}</td>
+      <td>{{ f.document_id }}</td>
+      <td>{{ f.issue }}</td>
+      <td>{{ "Yes" if f.resolved else "No" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

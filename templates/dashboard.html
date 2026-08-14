@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">Everything below is computed live from the inventory_movements ledger and the parsed documents on file.</p>
+
+{% if negative_balances %}
+<div class="panel" style="border-color: var(--error); background: var(--error-bg);">
+  <h2 style="margin-top:0; color: var(--error);">&#9888; Negative Inventory -- Investigation Required</h2>
+  <p class="subtitle" style="margin:0 0 14px;">Never hidden, regardless of the filters below. Almost always means an earlier production, transfer, or opening-balance entry is missing -- not that the movement that caused this was wrong.</p>
+  {% for n in negative_balances %}
+  <div style="{% if not loop.last %}margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid var(--border);{% endif %}">
+    <strong>{{ n.location }}</strong> &middot; SKU {{ n.sku_code }}{% if n.sku_desc %} ({{ n.sku_desc }}){% endif %} &middot;
+    on hand: <span class="neg">{{ "%.0f"|format(n.qty_on_hand) }}</span>
+    {% if n.recent %}
+    <table style="margin-top:8px;">
+      <tr><th>Date</th><th>Type</th><th>Qty</th><th>From</th><th>To</th><th>Reason</th></tr>
+      {% for m in n.recent %}
+      <tr>
+        <td>{{ m.movement_date }}</td>
+        <td>{{ m.movement_type }}</td>
+        <td>{{ "%.0f"|format(m.quantity) }}</td>
+        <td>{{ m.from_name or "" }}</td>
+        <td>{{ m.to_name or "" }}</td>
+        <td>{{ m.reason or "" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2 style="margin-top:0;">Negative-inventory flags <span class="badge">{{ inventory_flags|length }}</span></h2>
+  <p class="subtitle" style="margin:0 0 10px;">Every time a manual movement was overridden past a negative-inventory warning, or a real GRN's sale pushed a location below zero.</p>
+  {% if inventory_flags %}
+  <table>
+    <tr><th>SKU</th><th>Location</th><th>Source</th><th>Available</th><th>Requested</th><th>Resulting</th><th>Reason</th><th>Flagged</th><th></th></tr>
+    {% for f in inventory_flags %}
+    <tr>
+      <td>{{ f.sku_code }}</td>
+      <td>{{ f.location_name }}</td>
+      <td>{{ f.source }}{% if f.reference_id %} / {{ f.reference_id }}{% endif %}</td>
+      <td>{{ "%.0f"|format(f.available_before) if f.available_before is not none else "" }}</td>
+      <td>{{ "%.0f"|format(f.requested_qty) if f.requested_qty is not none else "" }}</td>
+      <td class="neg">{{ "%.0f"|format(f.resulting_balance) if f.resulting_balance is not none else "" }}</td>
+      <td>{{ f.reason or "" }}</td>
+      <td>{{ f.created_at }}</td>
+      <td>
+        <form method="post" action="{{ url_for('resolve_inventory_flag', flag_id=f.id) }}" style="margin:0;">
+          <button type="submit" class="link">Mark resolved</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No negative-inventory incidents flagged.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Voided entries <span class="badge">{{ voided_entries|length }}</span></h2>
+  <p class="subtitle" style="margin:0 0 10px;">Every PO/GRN/Discrepancy Note/manual movement that's been voided, with its reason -- this is the review trail for catching a void that was itself a mistake. Nothing here is ever deleted; Restore reverses it exactly.</p>
+  {% if voided_entries %}
+  <table>
+    <tr><th>Type</th><th>Entry</th><th>Reason</th><th>Voided</th><th></th></tr>
+    {% for v in voided_entries %}
+    <tr>
+      <td>{{ v.type.replace('_', ' ') }}</td>
+      <td>{{ v.label }}</td>
+      <td>{{ v.reason or "" }}</td>
+      <td>{{ v.voided_at or "" }}</td>
+      <td>
+        {% if v.type == "po" %}
+        <form method="post" action="{{ url_for('restore_po_route', po_number=v.id) }}" style="margin:0;">
+          <button type="submit" class="link">Restore</button>
+        </form>
+        {% elif v.type == "grn" %}
+        <form method="post" action="{{ url_for('restore_grn_route', grn_number=v.id) }}" style="margin:0;">
+          <button type="submit" class="link">Restore</button>
+        </form>
+        {% elif v.type == "discrepancy_note" %}
+        <form method="post" action="{{ url_for('restore_discrepancy_note_route', dn_number=v.id) }}" style="margin:0;">
+          <button type="submit" class="link">Restore</button>
+        </form>
+        {% elif v.type == "movement" %}
+        <form method="post" action="{{ url_for('restore_movement_route', movement_id=v.id) }}" style="margin:0;">
+          <button type="submit" class="link">Restore</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">Nothing voided.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <form method="get" class="row" style="align-items:flex-end;">
+    <div class="field">
+      <label for="location">Filter by location</label>
+      <select name="location" id="location" onchange="this.form.submit()">
+        <option value="">All locations</option>
+        {% for l in all_locations %}
+        <option value="{{ l.name }}" {{ "selected" if selected_location == l.name }}>{{ l.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="sku">Filter by SKU</label>
+      <select name="sku" id="sku" onchange="this.form.submit()">
+        <option value="">All SKUs</option>
+        {% for p in all_products %}
+        <option value="{{ p.sku_code }}" {{ "selected" if selected_sku == p.sku_code }}>{{ p.sku_code }}{% if p.sku_desc %} -- {{ p.sku_desc[:40] }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="facility">Filter by Scootsy facility</label>
+      <select name="facility" id="facility" onchange="this.form.submit()">
+        <option value="">All facilities</option>
+        {% for f in all_facilities %}
+        <option value="{{ f.facility_name }}" {{ "selected" if selected_facility == f.facility_name }}>{{ f.facility_name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if selected_location or selected_sku or selected_facility %}
+    <div class="field" style="flex:0;">
+      <a href="{{ url_for('dashboard') }}">Clear filters</a>
+    </div>
+    {% endif %}
+  </form>
+  <p class="subtitle" style="margin:10px 0 0;">Location and SKU filter stock, damage, shortfall, and GRN discrepancy panels below (SKU narrows all four; location only narrows stock/damage, since Drizzl's own warehouses aren't relevant to a PO or GRN line). Facility filters the Purchase Orders panel only -- it's Scootsy's receiving warehouse, a separate thing from Drizzl's own locations.</p>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Purchase Orders{% if selected_facility %} -- {{ selected_facility }}{% endif %}</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Every parsed PO, whether or not it's been fully received yet. "Facility" is the Scootsy warehouse the PO shipped to (e.g. Hyderabad, Mumbai) -- a completely separate thing from "Source location", the Drizzl location expected to fulfill this PO. A Scootsy facility is never assumed to map to a Drizzl location -- assign it explicitly.</p>
+  {% if purchase_orders %}
+  <table>
+    <tr><th>PO</th><th>Date</th><th>Facility</th><th>Customer</th><th>Grand total</th><th>Source location</th><th></th><th></th></tr>
+    {% for po in purchase_orders %}
+    <tr>
+      <td>{{ po.po_number }}</td>
+      <td>{{ po.po_date or "" }}</td>
+      <td>{{ po.facility_name or "" }}</td>
+      <td>{{ po.customer_name or "" }}</td>
+      <td>{{ po.grand_total if po.grand_total is not none else "" }}</td>
+      <td>
+        {% if po.source_location %}
+        {{ po.source_location }}
+        {% else %}
+        <span class="badge">Not allocated</span>
+        {% endif %}
+        <form method="post" action="{{ url_for('assign_po_location_route', po_number=po.po_number) }}" style="margin:4px 0 0;">
+          <select name="source_location" style="width:110px; display:inline-block; padding:4px 6px;">
+            <option value="">{{ "change to..." if po.source_location else "choose..." }}</option>
+            {% for l in all_locations %}
+            <option value="{{ l.name }}">{{ l.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="link">Set</button>
+        </form>
+      </td>
+      <td><a href="{{ url_for('lookup', q=po.po_number) }}">View</a></td>
+      <td>
+        <form method="post" action="{{ url_for('void_po_route', po_number=po.po_number) }}" style="margin:0;"
+              onsubmit="return confirm('Void PO {{ po.po_number }}? It stays visible on the Look up page and in Voided entries below, just excluded from every calculation -- restorable anytime.');">
+          <input type="text" name="reason" placeholder="Reason" required style="width:100px; display:inline-block; padding:4px 6px; margin-bottom:4px;">
+          <button type="submit" class="link">Void</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No POs for this facility." if selected_facility else "No POs parsed yet." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Unallocated commitment <span class="badge">{{ unallocated_commitments|length }}</span></h2>
+  <p class="subtitle" style="margin:0 0 10px;">Open PO quantity with no Drizzl source location assigned yet -- real committed stock the business owes, just not yet attributed to any location's Committed/Uncommitted numbers below. Assign a source location on the Purchase Orders table above to resolve.</p>
+  {% if unallocated_commitments %}
+  <table>
+    <tr><th>SKU</th><th>Description</th><th>Committed (unallocated)</th></tr>
+    {% for u in unallocated_commitments %}
+    <tr>
+      <td>{{ u.sku_code }}</td>
+      <td>{{ u.sku_desc or "" }}</td>
+      <td>{{ "%.0f"|format(u.qty) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">Nothing unallocated -- every open PO has a Drizzl source location assigned.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Current stock by location</h2>
+  <p class="subtitle" style="margin:0 0 10px;">On hand = physical stock. Committed = reserved against an open, unresolved PO allocated to this location (see Purchase Orders above). Uncommitted = on hand minus committed -- what's actually free to move or promise. A "Commitment shortfall" badge means on hand is still positive, but there's less of it than this location's open PO commitments need.</p>
+  {% if stock %}
+  <table>
+    <tr><th>Location</th><th>SKU</th><th>Description</th><th>Qty on hand</th><th>Committed</th><th>Uncommitted</th></tr>
+    {% for r in stock %}
+    <tr>
+      <td>{{ r.location }}</td>
+      <td>{{ r.sku_code }}</td>
+      <td>{{ r.sku_desc or "" }}</td>
+      <td class="{{ 'neg' if r.qty_on_hand < 0 }}">{{ "%.0f"|format(r.qty_on_hand) }}</td>
+      <td>{{ "%.0f"|format(r.qty_committed) if r.qty_committed else "" }}</td>
+      <td class="{{ 'neg' if r.qty_uncommitted < 0 }}">
+        {{ "%.0f"|format(r.qty_uncommitted) }}
+        {% if r.qty_uncommitted < 0 and r.qty_on_hand >= 0 %}<span class="badge" style="background: var(--warn-bg); color: var(--warn);">Commitment shortfall</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No stock matches this filter." if (selected_location or selected_sku) else "No movements recorded yet." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Damaged units by SKU</h2>
+  {% if damaged_by_sku %}
+  <table>
+    <tr><th>SKU</th><th>Description</th><th>Total damaged</th><th>Events</th></tr>
+    {% for r in damaged_by_sku %}
+    <tr>
+      <td>{{ r.sku_code }}</td>
+      <td>{{ r.sku_desc or "" }}</td>
+      <td>{{ "%.0f"|format(r.total_damaged) }}</td>
+      <td>{{ r.n_events }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No damage matches this filter." if (selected_location or selected_sku) else "No damage recorded yet." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Damaged units by cause</h2>
+  {% if damaged_by_cause %}
+  <table>
+    <tr><th>Cause</th><th>Total damaged</th><th>Events</th></tr>
+    {% for r in damaged_by_cause %}
+    <tr>
+      <td>{{ r.cause }}</td>
+      <td>{{ "%.0f"|format(r.total_damaged) }}</td>
+      <td>{{ r.n_events }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No damage matches this filter." if (selected_location or selected_sku) else "No damage recorded yet." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Ordered vs received shortfall{% if selected_sku %} -- SKU {{ selected_sku }}{% endif %}</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Per PO line, across parsed POs only. Respects the SKU filter above (not location -- a PO isn't tied to a Drizzl warehouse).</p>
+  {% if shortfall %}
+  <table>
+    <tr><th>PO</th><th>SKU</th><th>Description</th><th>Ordered</th><th>Received</th><th>Shortfall</th></tr>
+    {% for r in shortfall %}
+    <tr>
+      <td>{{ r.po_number }}</td>
+      <td>{{ r.sku_code }}</td>
+      <td>{{ r.sku_desc or "" }}</td>
+      <td>{{ "%.0f"|format(r.ordered_qty) }}</td>
+      <td>{{ "%.0f"|format(r.received_qty) }}</td>
+      <td class="{{ 'neg' if r.shortfall > 0 }}">{{ "%+.0f"|format(r.shortfall) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No shortfall for this SKU -- fully received, or no PO line for it." if selected_sku else "Every parsed PO line has been fully received." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">GRN discrepancies (expected vs received){% if selected_sku %} -- SKU {{ selected_sku }}{% endif %}</h2>
+  <p class="subtitle" style="margin:0 0 10px;">A discrepancy here does NOT automatically create a loss -- it's unresolved until a Discrepancy Note explains it.</p>
+  {% if grn_discrepancies %}
+  <table>
+    <tr><th>PO</th><th>GRN</th><th>SKU</th><th>Description</th><th>Expected</th><th>Received</th><th>Difference</th><th>Discrepancy Note</th></tr>
+    {% for r in grn_discrepancies %}
+    <tr>
+      <td>{{ r.po_number or "" }}</td>
+      <td>{{ r.grn_number }}</td>
+      <td>{{ r.sku_code }}</td>
+      <td>{{ r.sku_desc or "" }}</td>
+      <td>{{ "%.0f"|format(r.expected_qty) }}</td>
+      <td>{{ "%.0f"|format(r.received_qty) }}</td>
+      <td class="neg">{{ "%+.0f"|format(r.discrepancy_qty) }}{% if r.discrepancy_qty < 0 %} (received more than expected){% endif %}</td>
+      {% if r.dn_number %}
+      <td>{{ r.dn_number }} -- {{ r.reason }}{% if r.remarks %} ({{ r.remarks }}){% endif %}</td>
+      {% else %}
+      <td class="neg">Missing / Awaiting Upload</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">{{ "No discrepancies for this SKU." if selected_sku else "No discrepancies -- every GRN with a known expected quantity received exactly that much." }}</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Documents flagged for review <span class="badge">{{ flags|length }}</span></h2>
+  {% if flags %}
+  <table>
+    <tr><th>Type</th><th>Document</th><th>Issue</th><th>Source file</th><th>Flagged</th><th></th></tr>
+    {% for r in flags %}
+    <tr>
+      <td>{{ r.document_type }}</td>
+      <td>{{ r.document_id }}</td>
+      <td>{{ r.issue }}</td>
+      <td>{{ r.source_file or "" }}</td>
+      <td>{{ r.created_at }}</td>
+      <td>
+        <form method="post" action="{{ url_for('resolve_flag', flag_id=r.id) }}" style="margin:0;">
+          <button type="submit" class="link">Mark resolved</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">Nothing flagged -- every parsed document's numbers checked out.</p>
+  {% endif %}
+</div>
+{% endblock %}
