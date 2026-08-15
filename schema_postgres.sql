@@ -13,10 +13,10 @@
 -- Name" means Drizzl/Demo Beverage Company (the seller) -- this table is
 -- the other side of that relationship, the buyer, hence "customers".
 CREATE TABLE customers (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         SERIAL PRIMARY KEY,
     name       TEXT UNIQUE NOT NULL,
     notes      TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 -- SKU catalog. Rows get created automatically the first time a SKU is
@@ -28,7 +28,7 @@ CREATE TABLE products (
     sku_desc   TEXT,
     brand      TEXT,
     pack_size  TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 -- Physical/logical places stock can sit: Drizzl's own facilities,
@@ -36,24 +36,24 @@ CREATE TABLE products (
 -- are NOT modeled here -- once a GRN is confirmed there, that stock is
 -- sold and off Drizzl's books, so there's no running balance to track.
 CREATE TABLE locations (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         SERIAL PRIMARY KEY,
     name       TEXT UNIQUE NOT NULL,
     type       TEXT NOT NULL,  -- 'own_facility' | 'consignment_partner' | 'market_event'
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 CREATE TABLE users (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             SERIAL PRIMARY KEY,
     username       TEXT UNIQUE NOT NULL,
     password_hash  TEXT NOT NULL,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 -- The ledger. current stock at a location = sum of quantity_in minus
 -- quantity_out for that location, derived from movement_type + the
 -- from/to columns below (see reconcile.py for the actual query).
 CREATE TABLE inventory_movements (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id               SERIAL PRIMARY KEY,
     movement_date    TEXT NOT NULL,
     sku_code         TEXT REFERENCES products(sku_code),
     movement_type    TEXT NOT NULL,  -- 'production' | 'opening_balance' | 'transfer' | 'sale' | 'loss'
@@ -84,7 +84,7 @@ CREATE TABLE inventory_movements (
     voided           INTEGER NOT NULL DEFAULT 0,
     void_reason      TEXT,
     voided_at        TEXT,
-    created_at       TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at       TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_movements_sku ON inventory_movements(sku_code);
 CREATE INDEX idx_movements_date ON inventory_movements(movement_date);
@@ -122,11 +122,11 @@ CREATE TABLE purchase_orders (
     voided                         INTEGER NOT NULL DEFAULT 0,
     void_reason                    TEXT,
     voided_at                      TEXT,
-    created_at                     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at                     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 CREATE TABLE po_line_items (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id               SERIAL PRIMARY KEY,
     po_number        TEXT NOT NULL REFERENCES purchase_orders(po_number),
     sno              TEXT,
     item_code        TEXT,
@@ -151,7 +151,7 @@ CREATE INDEX idx_po_line_items_po_number ON po_line_items(po_number);
 
 -- Warehouse delivery slot bookings (from the appointment CSV export).
 CREATE TABLE appointments (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             SERIAL PRIMARY KEY,
     appointment_id TEXT UNIQUE,
     po_number      TEXT REFERENCES purchase_orders(po_number),
     facility_name  TEXT,
@@ -159,7 +159,7 @@ CREATE TABLE appointments (
     slot_time      TEXT,
     booked_qty     REAL,
     state          TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_appointments_po_number ON appointments(po_number);
 
@@ -197,12 +197,12 @@ CREATE TABLE grn_receipts (
     voided         INTEGER NOT NULL DEFAULT 0,
     void_reason    TEXT,
     voided_at      TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_grn_receipts_po_number ON grn_receipts(po_number);
 
 CREATE TABLE grn_line_items (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                SERIAL PRIMARY KEY,
     grn_number        TEXT NOT NULL REFERENCES grn_receipts(grn_number),
     sku_code          TEXT REFERENCES products(sku_code),
     sku_desc          TEXT,
@@ -253,11 +253,11 @@ CREATE TABLE discrepancy_notes (
     voided         INTEGER NOT NULL DEFAULT 0,
     void_reason    TEXT,
     voided_at      TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 CREATE TABLE discrepancy_note_items (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            SERIAL PRIMARY KEY,
     dn_number     TEXT NOT NULL REFERENCES discrepancy_notes(dn_number),
     sno           TEXT,
     sku_code      TEXT REFERENCES products(sku_code),
@@ -297,20 +297,20 @@ CREATE TABLE debit_notes (
     total_amount      REAL,
     credits_remaining REAL,
     source_file       TEXT,
-    created_at        TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at        TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 
 -- A document still gets stored even if something about it looks off (a
 -- missing field, totals that don't add up) -- it's logged here instead
 -- of silently trusted or silently dropped, so a human can go check it.
 CREATE TABLE ingestion_flags (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             SERIAL PRIMARY KEY,
     document_type  TEXT NOT NULL,  -- 'po' | 'grn' | 'discrepancy_note' | 'debit_note'
     document_id    TEXT NOT NULL,  -- the relevant document number
     issue          TEXT NOT NULL,
     source_file    TEXT,
     resolved       INTEGER NOT NULL DEFAULT 0,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_ingestion_flags_unresolved ON ingestion_flags(resolved);
 
@@ -340,7 +340,7 @@ CREATE INDEX idx_ingestion_flags_unresolved ON ingestion_flags(resolved);
 -- re-upload deletes and recreates its movements; an enforced FK here
 -- would break that).
 CREATE TABLE inventory_flags (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                SERIAL PRIMARY KEY,
     movement_id       INTEGER,
     sku_code          TEXT,
     location_name     TEXT,
@@ -351,7 +351,7 @@ CREATE TABLE inventory_flags (
     resulting_balance REAL,
     reason            TEXT,           -- the human's override reason (source='manual_override' only)
     resolved          INTEGER NOT NULL DEFAULT 0,
-    created_at        TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at        TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_inventory_flags_unresolved ON inventory_flags(resolved);
 
@@ -360,17 +360,17 @@ CREATE INDEX idx_inventory_flags_unresolved ON inventory_flags(resolved);
 -- everything that happened, in order, without having to cross-reference
 -- separate document/movement tables.
 CREATE TABLE activity_log (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             SERIAL PRIMARY KEY,
     action_type    TEXT NOT NULL,  -- 'po_upload' | 'grn_upload' | 'discrepancy_note_upload' | 'movement' | 'flag_resolved'
     description    TEXT NOT NULL,  -- human-readable summary, built at the time of the action
     reference_type TEXT,           -- 'po' | 'grn' | 'discrepancy_note' | 'movement' | 'ingestion_flag'
     reference_id   TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_activity_log_created_at ON activity_log(created_at);
 
 CREATE TABLE debit_note_items (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          SERIAL PRIMARY KEY,
     note_number TEXT NOT NULL REFERENCES debit_notes(note_number),
     description TEXT,
     -- Debit Note line items are description-only, no SKU code printed on

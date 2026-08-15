@@ -22,7 +22,7 @@ def stock_by_location(conn, location=None, sku_code=None):
     arrived yet. Returns plain dicts (not sqlite3.Row) since these two
     columns are computed in Python, not SQL."""
     query = """
-        SELECT l.name AS location, m.sku_code, p.sku_desc, SUM(delta) AS qty_on_hand
+        SELECT l.name AS location, m.sku_code, MAX(p.sku_desc) AS sku_desc, SUM(delta) AS qty_on_hand
         FROM (
             SELECT location_to_id AS location_id, sku_code, quantity AS delta
             FROM inventory_movements WHERE location_to_id IS NOT NULL AND voided = 0
@@ -42,7 +42,7 @@ def stock_by_location(conn, location=None, sku_code=None):
         params.append(sku_code)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " GROUP BY l.name, m.sku_code HAVING qty_on_hand != 0 ORDER BY l.name, qty_on_hand DESC"
+    query += " GROUP BY l.name, m.sku_code HAVING SUM(delta) != 0 ORDER BY l.name, qty_on_hand DESC"
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
     committed_map = committed_by_location_sku(conn)
@@ -230,7 +230,7 @@ def damaged_units_by_sku(conn, sku_code=None, location=None):
     write-off looks small. `location` filters to where the damaged stock
     left from (loss movements always have a From location)."""
     query = """
-        SELECT m.sku_code, p.sku_desc, SUM(m.quantity) AS total_damaged, COUNT(*) AS n_events
+        SELECT m.sku_code, MAX(p.sku_desc) AS sku_desc, SUM(m.quantity) AS total_damaged, COUNT(*) AS n_events
         FROM inventory_movements m
         LEFT JOIN products p ON p.sku_code = m.sku_code
         LEFT JOIN locations lf ON lf.id = m.location_from_id
@@ -277,11 +277,11 @@ def po_vs_received_shortfall(conn, sku_code=None):
     query = """
         SELECT
             p.item_code AS sku_code,
-            p.item_desc AS sku_desc,
+            MAX(p.item_desc) AS sku_desc,
             p.po_number,
-            p.qty AS ordered_qty,
+            MAX(p.qty) AS ordered_qty,
             COALESCE(SUM(CASE WHEN g.voided = 0 THEN gli.received_qty END), 0) AS received_qty,
-            p.qty - COALESCE(SUM(CASE WHEN g.voided = 0 THEN gli.received_qty END), 0) AS shortfall
+            MAX(p.qty) - COALESCE(SUM(CASE WHEN g.voided = 0 THEN gli.received_qty END), 0) AS shortfall
         FROM po_line_items p
         JOIN purchase_orders po ON po.po_number = p.po_number AND po.voided = 0
         LEFT JOIN grn_receipts g ON g.po_number = p.po_number
@@ -292,7 +292,11 @@ def po_vs_received_shortfall(conn, sku_code=None):
     if sku_code:
         query += " WHERE p.item_code = ?"
         params.append(sku_code)
-    query += " GROUP BY p.po_number, p.item_code HAVING shortfall != 0 ORDER BY shortfall DESC"
+    query += (
+        " GROUP BY p.po_number, p.item_code"
+        " HAVING MAX(p.qty) - COALESCE(SUM(CASE WHEN g.voided = 0 THEN gli.received_qty END), 0) != 0"
+        " ORDER BY shortfall DESC"
+    )
     return conn.execute(query, params).fetchall()
 
 
@@ -423,7 +427,7 @@ def po_quantity_by_flavor(conn):
     understate or overstate the real can count."""
     rows = conn.execute(
         """
-        SELECT p.sku_desc, SUM(pli.qty) AS total_qty
+        SELECT MAX(p.sku_desc) AS sku_desc, SUM(pli.qty) AS total_qty
         FROM po_line_items pli
         JOIN purchase_orders po ON po.po_number = pli.po_number AND po.voided = 0
         LEFT JOIN products p ON p.sku_code = pli.item_code

@@ -45,7 +45,7 @@ def _normalize_sku(code):
 def _ensure_customer(conn, name):
     if not name:
         return None
-    conn.execute("INSERT OR IGNORE INTO customers (name) VALUES (?)", (name,))
+    conn.execute("INSERT INTO customers (name) VALUES (?) ON CONFLICT (name) DO NOTHING", (name,))
     return conn.execute(
         "SELECT id FROM customers WHERE name = ?", (name,)
     ).fetchone()["id"]
@@ -55,7 +55,7 @@ def _ensure_location(conn, name, loc_type="own_facility"):
     if not name:
         return None
     conn.execute(
-        "INSERT OR IGNORE INTO locations (name, type) VALUES (?, ?)", (name, loc_type)
+        "INSERT INTO locations (name, type) VALUES (?, ?) ON CONFLICT (name) DO NOTHING", (name, loc_type)
     )
     return conn.execute(
         "SELECT id FROM locations WHERE name = ?", (name,)
@@ -67,7 +67,7 @@ def _ensure_product(conn, sku_code, sku_desc=None):
     if not sku_code:
         return None
     conn.execute(
-        "INSERT OR IGNORE INTO products (sku_code, sku_desc) VALUES (?, ?)",
+        "INSERT INTO products (sku_code, sku_desc) VALUES (?, ?) ON CONFLICT (sku_code) DO NOTHING",
         (sku_code, sku_desc),
     )
     if sku_desc:
@@ -82,7 +82,7 @@ def _ensure_po_stub(conn, po_number, customer_id=None):
     if not po_number:
         return
     conn.execute(
-        "INSERT OR IGNORE INTO purchase_orders (po_number, customer_id) VALUES (?, ?)",
+        "INSERT INTO purchase_orders (po_number, customer_id) VALUES (?, ?) ON CONFLICT (po_number) DO NOTHING",
         (po_number, customer_id),
     )
 
@@ -93,7 +93,7 @@ def _ensure_grn_stub(conn, grn_number, customer_id=None):
     if not grn_number:
         return
     conn.execute(
-        "INSERT OR IGNORE INTO grn_receipts (grn_number, customer_id) VALUES (?, ?)",
+        "INSERT INTO grn_receipts (grn_number, customer_id) VALUES (?, ?) ON CONFLICT (grn_number) DO NOTHING",
         (grn_number, customer_id),
     )
 
@@ -358,12 +358,13 @@ def record_movement(conn, movement_date, sku_code, movement_type, quantity,
              reference_id, notes, recorded_by, negative_override_reason,
              commitment_override_reason)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (movement_date, sku_code, movement_type, quantity, from_id, to_id,
          reason, reference_type, reference_id, notes, recorded_by,
          negative_override_reason, commitment_override_reason),
     )
-    return cur.lastrowid
+    return cur.fetchone()["id"]
 
 
 def record_inventory_flag(conn, sku_code, location_name, source, available_before,
