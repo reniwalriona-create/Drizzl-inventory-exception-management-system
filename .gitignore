@@ -1,1 +1,8 @@
 private_data/
+uploads/
+inventory.db
+.DS_Store
+.claude/
+.venv/
+__pycache__/
+*.db.backup-*
