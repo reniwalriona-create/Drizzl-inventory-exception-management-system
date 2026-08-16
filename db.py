@@ -6,6 +6,10 @@ from pathlib import Path
 
 DB_NAME = "drizzl_inventory"
 SCHEMA_PATH = Path(__file__).parent / "schema_postgres.sql"
+# Phase 1 catalog seed (master_products + customer_product_skus). Reuses
+# the migration file directly instead of duplicating its idempotent seed
+# logic in two places -- see _seed_catalog() below.
+CATALOG_MIGRATION_PATH = Path(__file__).parent / "migrations" / "001_master_product_identity.sql"
 
 
 class _PGConnection:
@@ -47,6 +51,15 @@ def _seed(conn):
     )
 
 
+def _seed_catalog(conn):
+    """Must run after _seed() -- the migration file looks up Scootsy's
+    customer_id by name, so Scootsy has to already exist. Only called
+    once, on a genuinely fresh install (same needs_seed gate as _seed()),
+    not on every connection -- the migration itself is idempotent, but
+    there's no reason to re-run it on every request."""
+    conn.executescript(CATALOG_MIGRATION_PATH.read_text())
+
+
 def get_connection():
     raw_conn = psycopg2.connect(dbname=DB_NAME)
     conn = _PGConnection(raw_conn)
@@ -60,6 +73,7 @@ def get_connection():
     needs_seed = conn.execute("SELECT COUNT(*) AS n FROM customers").fetchone()["n"] == 0
     if needs_seed:
         _seed(conn)
+        _seed_catalog(conn)
 
     conn.commit()
     return conn

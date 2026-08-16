@@ -381,3 +381,38 @@ CREATE TABLE debit_note_items (
     rate        REAL,
     amount      REAL
 );
+
+-- Phase 1 of the Master Product / customer-SKU identity system (added
+-- 2026-08-15). Deliberately NOT wired into any table above yet -- the
+-- legacy `products` table (keyed by sku_code) keeps working exactly as
+-- before for every existing PO/GRN/movement path. See PROJECT_HANDOFF.md.
+
+-- Drizzl's own canonical product catalog. barcode is the real-world
+-- business identifier; product_id is only the internal relational key.
+CREATE TABLE master_products (
+    product_id   SERIAL PRIMARY KEY,
+    barcode      TEXT NOT NULL UNIQUE,
+    product_name TEXT NOT NULL,
+    unit_size    TEXT,
+    active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Bridges a customer's own SKU code to Drizzl's master product. Not
+-- assumed globally unique -- two different customers may reuse the same
+-- external_sku for two different products, so uniqueness is scoped to
+-- (customer_id, external_sku). A customer may have more than one
+-- external_sku pointing at the same product_id over time (e.g. a
+-- replacement code), so (customer_id, product_id) is deliberately NOT
+-- made unique.
+CREATE TABLE customer_product_skus (
+    id                    SERIAL PRIMARY KEY,
+    customer_id           INTEGER NOT NULL REFERENCES customers(id),
+    product_id            INTEGER NOT NULL REFERENCES master_products(product_id),
+    external_sku          TEXT NOT NULL,
+    external_description  TEXT,
+    active                BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (customer_id, external_sku)
+);
+CREATE INDEX idx_customer_product_skus_product_id ON customer_product_skus(product_id);
