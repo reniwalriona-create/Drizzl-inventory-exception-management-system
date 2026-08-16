@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}PO CSV import - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Purchase Order CSV import</h1>
+<p class="subtitle">Scootsy's bulk PO export -- a single CSV can contain many purchase orders, each with several product lines. Uploading only stages the orders for review; nothing is added to inventory, commitments, or the official PO ledger until each order is reviewed and posted in a later step.</p>
+
+<div class="panel">
+  <form method="post" enctype="multipart/form-data">
+    <div class="field">
+      <label for="file">Purchase Order CSV file</label>
+      <input type="file" name="file" id="file" accept=".csv" required>
+    </div>
+    <button type="submit">Upload &amp; stage</button>
+  </form>
+</div>
+
+<h2>Recent imports</h2>
+{% if batches %}
+<div class="panel">
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>File</th><th>Customer</th><th>Uploaded</th><th>Orders</th>
+      <th>Ready</th><th>Needs source</th><th>Blocked</th><th></th>
+    </tr>
+    {% for b in batches %}
+    <tr>
+      <td>{{ b.source_filename }}</td>
+      <td>{{ b.customer_name }}</td>
+      <td>{{ b.created_at }}</td>
+      <td>{{ b.summary.orders }}</td>
+      <td>{{ b.summary.ready }}</td>
+      <td>{{ b.summary.needs_source }}</td>
+      <td>{{ b.summary.blocked }}</td>
+      <td><a href="{{ url_for('po_import_review', batch_id=b.batch_id) }}">Review</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% else %}
+<div class="panel">
+  <p class="empty">No staged imports yet.</p>
+</div>
+{% endif %}
+{% endblock %}

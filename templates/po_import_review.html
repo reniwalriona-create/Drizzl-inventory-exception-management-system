@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Review batch {{ batch.batch_id }} - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>Purchase Order Import Review</h1>
+<p class="subtitle">Staged orders only -- nothing here has been posted to the official PO ledger, inventory, or commitments yet.</p>
+
+<div class="panel">
+  <p class="subtitle" style="margin:0 0 6px;">
+    File: <strong>{{ batch.source_filename }}</strong> &middot;
+    Customer: <strong>{{ batch.customer_name }}</strong> &middot;
+    Uploaded: {{ batch.created_at }}
+  </p>
+  <p class="subtitle" style="margin:0;">
+    Orders: <strong>{{ summary.orders }}</strong> &middot;
+    Lines: <strong>{{ summary.lines }}</strong> &middot;
+    <span class="badge badge-ready">Ready {{ summary.ready }}</span>
+    <span class="badge badge-needs_source">Needs source {{ summary.needs_source }}</span>
+    <span class="badge badge-blocked">Blocked {{ summary.blocked }}</span>
+  </p>
+</div>
+
+{% if not staged_pos %}
+<div class="panel">
+  <p class="empty">No purchase orders in this batch.</p>
+</div>
+{% else %}
+
+{% if not all_locations %}
+<div class="panel">
+  <p class="flash flash-warning" style="margin:0;">No Drizzl warehouse locations exist yet -- source assignment is unavailable until at least one location is added.</p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th><input type="checkbox" id="select-all" {{ "disabled" if not all_locations }}></th>
+      <th>PO Number</th>
+      <th>Customer</th>
+      <th>Destination</th>
+      <th>Lines</th>
+      <th>Ordered Qty</th>
+      <th>Drizzl Source</th>
+      <th>Status</th>
+      <th></th>
+    </tr>
+    {% for po in staged_pos %}
+    <tr>
+      <td>
+        {% if all_locations %}
+        <input type="checkbox" name="staged_po_ids" value="{{ po.staged_po_id }}" form="bulk-assign-form" class="po-checkbox">
+        {% endif %}
+      </td>
+      <td><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">{{ po.external_po_number }}</a></td>
+      <td>{{ batch.customer_name }}</td>
+      <td>{{ po.destination_facility_name or "" }}{% if po.destination_city %}, {{ po.destination_city }}{% endif %}</td>
+      <td>{{ po.line_count }} line{{ "s" if po.line_count != 1 }}</td>
+      <td>{{ "%.0f"|format(po.total_ordered_qty) }} units</td>
+      <td>
+        {% if po.source_location_name %}
+        <strong>{{ po.source_location_name }}</strong>
+        {% else %}
+        <span class="badge">Not assigned</span>
+        {% endif %}
+        {% if all_locations %}
+        <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:inline-flex; gap:4px; margin-top:4px;">
+          <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
+          <select name="source_location_id" style="width:130px; padding:4px 6px;">
+            <option value="">{{ "change to..." if po.source_location_name else "choose..." }}</option>
+            {% for l in all_locations %}
+            <option value="{{ l.id }}">{{ l.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="link">Set</button>
+        </form>
+        {% endif %}
+      </td>
+      <td><span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span></td>
+      <td><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+
+{% if all_locations %}
+<form id="bulk-assign-form" method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" class="panel row" style="align-items:flex-end;">
+  <div class="field" style="max-width:240px; margin-bottom:0;">
+    <label for="bulk_location">Assign selected to</label>
+    <select name="source_location_id" id="bulk_location">
+      <option value="">choose warehouse&hellip;</option>
+      {% for l in all_locations %}
+      <option value="{{ l.id }}">{{ l.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit">Apply to Selected</button>
+</form>
+
+<script>
+  document.getElementById("select-all").addEventListener("change", function () {
+    document.querySelectorAll(".po-checkbox").forEach(function (cb) { cb.checked = this.checked; }, this);
+  });
+</script>
+{% endif %}
+
+{% endif %}
+{% endblock %}

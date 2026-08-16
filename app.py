@@ -5,11 +5,13 @@ a dashboard built on reconcile.py's reports, and a manual movement form
 production) that no document exists for.
 """
 import os
+import secrets
 from pathlib import Path
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
+import po_csv_staging
 import reconcile
 from activity_log import log_activity, recent_activity
 from db import get_connection
@@ -694,6 +696,143 @@ def activity():
         )
     finally:
         conn.close()
+
+
+@app.route("/po-import", methods=["GET", "POST"])
+def po_import():
+    conn = get_connection()
+    try:
+        if request.method == "POST":
+            file = request.files.get("file")
+            if not file or file.filename == "":
+                flash("Choose a CSV file to upload.", "error")
+                return redirect(url_for("po_import"))
+
+            original_name = secure_filename(file.filename)
+            if not original_name.lower().endswith(".csv"):
+                flash("Purchase Order CSV import expects a .csv file.", "error")
+                return redirect(url_for("po_import"))
+
+            # Collision-safe stored filename -- the original name is never
+            # trusted as a unique filesystem key. The human-readable
+            # original name is still what gets shown/stored as
+            # source_filename, via stage_po_csv's filename= override.
+            stored_name = f"po_csv_{secrets.token_hex(8)}_{original_name}"
+            dest = UPLOAD_DIR / stored_name
+            file.save(dest)
+
+            try:
+                result = po_csv_staging.stage_po_csv(conn, str(dest), filename=original_name)
+                if result["reused_existing_batch"]:
+                    flash("This file was already imported. Opening the existing staged batch.", "warning")
+                else:
+                    summary = po_csv_staging.batch_summary(conn, result["batch_id"])
+                    log_activity(
+                        conn, "po_csv_upload",
+                        f"Staged PO CSV {original_name} ({summary['orders']} orders, {summary['lines']} lines)",
+                        "po_import_batch", str(result["batch_id"]),
+                    )
+                    flash(
+                        f"Staged {summary['orders']} purchase order(s), {summary['lines']} line(s) from {original_name}. "
+                        "Nothing has been posted to inventory -- review and assign a Drizzl source warehouse below.",
+                        "success",
+                    )
+                conn.commit()
+                return redirect(url_for("po_import_review", batch_id=result["batch_id"]))
+            except po_csv_staging.FatalImportError as e:
+                conn.rollback()
+                flash(f"Could not import {original_name}: {e}", "error")
+                return redirect(url_for("po_import"))
+            except Exception:
+                conn.rollback()
+                flash(f"Could not import {original_name} -- an unexpected error occurred.", "error")
+                return redirect(url_for("po_import"))
+
+        return render_template("po_import.html", batches=po_csv_staging.list_recent_batches(conn))
+    finally:
+        conn.close()
+
+
+@app.route("/po-import/<int:batch_id>")
+def po_import_review(batch_id):
+    conn = get_connection()
+    try:
+        batch = po_csv_staging.get_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        return render_template(
+            "po_import_review.html",
+            batch=batch,
+            staged_pos=po_csv_staging.list_staged_pos(conn, batch_id),
+            summary=po_csv_staging.batch_summary(conn, batch_id),
+            all_locations=conn.execute("SELECT id, name FROM locations ORDER BY name").fetchall(),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/po-import/<int:batch_id>/po/<int:staged_po_id>")
+def staged_po_detail(batch_id, staged_po_id):
+    conn = get_connection()
+    try:
+        batch = po_csv_staging.get_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        staged_po = po_csv_staging.get_staged_po(conn, staged_po_id)
+        if staged_po is None or staged_po["batch_id"] != batch_id:
+            abort(404, description="This staged PO does not belong to this batch.")
+        return render_template(
+            "staged_po_detail.html",
+            batch=batch,
+            po=staged_po,
+            raw_rows=po_csv_staging.get_staged_po_raw_rows(conn, staged_po_id),
+            all_locations=conn.execute("SELECT id, name FROM locations ORDER BY name").fetchall(),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/po-import/<int:batch_id>/assign-source", methods=["POST"])
+def assign_staged_source(batch_id):
+    conn = get_connection()
+    try:
+        batch = po_csv_staging.get_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+
+        try:
+            staged_po_ids = [int(i) for i in request.form.getlist("staged_po_ids")]
+        except ValueError:
+            flash("Invalid purchase order selection.", "error")
+            return redirect(url_for("po_import_review", batch_id=batch_id))
+
+        raw_location = request.form.get("source_location_id")
+        try:
+            source_location_id = int(raw_location) if raw_location else None
+        except ValueError:
+            source_location_id = None
+        if source_location_id is None:
+            flash("Choose a Drizzl source warehouse.", "error")
+            return redirect(url_for("po_import_review", batch_id=batch_id))
+
+        try:
+            n = po_csv_staging.assign_source_location(conn, batch_id, staged_po_ids, source_location_id)
+            location_name = conn.execute(
+                "SELECT name FROM locations WHERE id = ?", (source_location_id,)
+            ).fetchone()["name"]
+            log_activity(
+                conn, "po_staged_source_assigned",
+                f"Assigned Drizzl source {location_name} to {n} staged PO(s) in batch {batch_id}",
+                "po_import_batch", str(batch_id),
+            )
+            conn.commit()
+            flash(f"Assigned {location_name} to {n} purchase order(s).", "success")
+        except ValueError as e:
+            conn.rollback()
+            flash(str(e), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("po_import_review", batch_id=batch_id))
 
 
 if __name__ == "__main__":

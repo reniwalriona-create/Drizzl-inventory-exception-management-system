@@ -347,26 +347,165 @@ def stage_po_csv(conn, csv_path, customer_id=None, filename=None):
     return {"batch_id": batch_id, "reused_existing_batch": False}
 
 
+def review_status(validation_status, source_location_id):
+    """The UI-only review state derived from Phase 3's validation_status
+    plus whether a Drizzl source has been manually assigned -- see
+    PROJECT_HANDOFF.md. Deliberately not a stored column: 'blocked' means
+    a data/product validation problem exists (source assignment does NOT
+    override this); 'needs_source' means the data is clean but no Drizzl
+    warehouse has been assigned yet; 'ready' means both are satisfied.
+    'ready' here never means posted to the official ledger."""
+    if validation_status == "blocked":
+        return "blocked"
+    if source_location_id is None:
+        return "needs_source"
+    return "ready"
+
+
 def get_import_batch(conn, batch_id):
-    row = conn.execute("SELECT * FROM po_import_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+    row = conn.execute(
+        """
+        SELECT b.*, c.name AS customer_name
+        FROM po_import_batches b
+        JOIN customers c ON c.id = b.customer_id
+        WHERE b.batch_id = ?
+        """,
+        (batch_id,),
+    ).fetchone()
     return dict(row) if row else None
 
 
 def list_staged_pos(conn, batch_id):
+    """Each staged PO plus its line count, total ordered quantity, and
+    derived review_status -- everything the batch review table needs."""
     rows = conn.execute(
-        "SELECT * FROM staged_purchase_orders WHERE batch_id = ? ORDER BY staged_po_id", (batch_id,)
+        """
+        SELECT p.*, COUNT(l.staged_line_id) AS line_count,
+               COALESCE(SUM(l.ordered_qty), 0) AS total_ordered_qty,
+               loc.name AS source_location_name
+        FROM staged_purchase_orders p
+        LEFT JOIN staged_po_lines l ON l.staged_po_id = p.staged_po_id
+        LEFT JOIN locations loc ON loc.id = p.source_location_id
+        WHERE p.batch_id = ?
+        GROUP BY p.staged_po_id, loc.name
+        ORDER BY p.staged_po_id
+        """,
+        (batch_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        po = dict(r)
+        po["review_status"] = review_status(po["validation_status"], po["source_location_id"])
+        result.append(po)
+    return result
+
+
+def batch_summary(conn, batch_id):
+    """Server-derived counts for the batch review header -- never trust
+    the browser for this."""
+    pos = list_staged_pos(conn, batch_id)
+    counts = {"ready": 0, "needs_source": 0, "blocked": 0}
+    for po in pos:
+        counts[po["review_status"]] += 1
+    line_count = sum(po["line_count"] for po in pos)
+    return {"orders": len(pos), "lines": line_count, **counts}
+
+
+def list_recent_batches(conn, limit=20):
+    rows = conn.execute(
+        """
+        SELECT b.*, c.name AS customer_name
+        FROM po_import_batches b
+        JOIN customers c ON c.id = b.customer_id
+        ORDER BY b.created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        batch = dict(r)
+        batch["summary"] = batch_summary(conn, batch["batch_id"])
+        result.append(batch)
+    return result
 
 
 def get_staged_po(conn, staged_po_id):
-    row = conn.execute("SELECT * FROM staged_purchase_orders WHERE staged_po_id = ?", (staged_po_id,)).fetchone()
+    row = conn.execute(
+        """
+        SELECT p.*, loc.name AS source_location_name
+        FROM staged_purchase_orders p
+        LEFT JOIN locations loc ON loc.id = p.source_location_id
+        WHERE p.staged_po_id = ?
+        """,
+        (staged_po_id,),
+    ).fetchone()
     if row is None:
         return None
     po = dict(row)
+    po["review_status"] = review_status(po["validation_status"], po["source_location_id"])
     po["lines"] = [
         dict(r) for r in conn.execute(
-            "SELECT * FROM staged_po_lines WHERE staged_po_id = ? ORDER BY staged_line_id", (staged_po_id,)
+            """
+            SELECT l.*, mp.barcode AS master_barcode, mp.product_name AS master_product_name
+            FROM staged_po_lines l
+            LEFT JOIN master_products mp ON mp.product_id = l.product_id
+            WHERE l.staged_po_id = ?
+            ORDER BY l.staged_line_id
+            """,
+            (staged_po_id,),
         ).fetchall()
     ]
     return po
+
+
+def get_staged_po_raw_rows(conn, staged_po_id):
+    """The original CSV rows behind this staged PO's lines, read-only --
+    for the detail page's 'view raw source rows' section."""
+    return [
+        dict(r) for r in conn.execute(
+            """
+            SELECT r.row_id, r.source_row_number, r.raw_data
+            FROM staged_po_lines l
+            JOIN po_import_rows r ON r.row_id = l.raw_row_id
+            WHERE l.staged_po_id = ?
+            ORDER BY r.source_row_number
+            """,
+            (staged_po_id,),
+        ).fetchall()
+    ]
+
+
+def assign_source_location(conn, batch_id, staged_po_ids, source_location_id):
+    """Assigns source_location_id to every staged PO in staged_po_ids, all
+    of which must belong to batch_id. Atomic and strict: rejects the whole
+    operation (no partial update) if the location doesn't exist or any
+    staged_po_id is unknown or belongs to a different batch. Only ever
+    touches staged_purchase_orders -- never the official ledger. Caller
+    owns commit/rollback, consistent with stage_po_csv()."""
+    staged_po_ids = list(staged_po_ids)
+    if not staged_po_ids:
+        raise ValueError("No staged purchase orders were selected.")
+
+    location = conn.execute("SELECT id FROM locations WHERE id = ?", (source_location_id,)).fetchone()
+    if location is None:
+        raise ValueError(f"Location id {source_location_id} does not exist.")
+
+    placeholders = ",".join(["?"] * len(staged_po_ids))
+    rows = conn.execute(
+        f"SELECT staged_po_id, batch_id FROM staged_purchase_orders WHERE staged_po_id IN ({placeholders})",
+        tuple(staged_po_ids),
+    ).fetchall()
+    found_ids = {r["staged_po_id"] for r in rows}
+    missing = set(staged_po_ids) - found_ids
+    if missing:
+        raise ValueError(f"Staged PO id(s) {sorted(missing)} do not exist.")
+    wrong_batch = {r["staged_po_id"] for r in rows if r["batch_id"] != batch_id}
+    if wrong_batch:
+        raise ValueError(f"Staged PO id(s) {sorted(wrong_batch)} do not belong to this batch.")
+
+    conn.execute(
+        f"UPDATE staged_purchase_orders SET source_location_id = ? WHERE staged_po_id IN ({placeholders})",
+        (source_location_id, *staged_po_ids),
+    )
+    return len(staged_po_ids)

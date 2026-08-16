@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Staged PO {{ po.external_po_number }} - Drizzl Inventory{% endblock %}
+{% block content %}
+<p class="subtitle" style="margin-bottom:6px;"><a href="{{ url_for('po_import_review', batch_id=batch.batch_id) }}">&larr; Back to batch review</a></p>
+<div class="row" style="justify-content:space-between; align-items:flex-start;">
+  <h1 style="margin-bottom:4px;">Staged PO {{ po.external_po_number }}</h1>
+  <span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span>
+</div>
+<p class="subtitle">From batch {{ batch.batch_id }} ({{ batch.source_filename }}) &middot; not yet posted to the official PO ledger, inventory, or commitments.</p>
+
+{% if po.validation_status == "blocked" and po.validation_errors %}
+<div class="panel">
+  <h2 style="margin-top:0;">Validation problems on this order</h2>
+  <ul style="margin:0; padding-left:20px;">
+    {% for err in po.validation_errors %}
+    <li>{{ err.message }}{% if err.field %} <span class="subtitle" style="display:inline;">({{ err.field }})</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2 style="margin-top:0;">Purchase order details</h2>
+  <table>
+    <tr><th>Customer</th><td>{{ batch.customer_name }}</td></tr>
+    <tr><th>Created</th><td>{{ po.po_created_at or "" }}</td></tr>
+    <tr><th>Modified</th><td>{{ po.po_modified_at or "" }}</td></tr>
+    <tr><th>External status</th><td>{{ po.external_status or "" }}</td></tr>
+    <tr><th>Vendor</th><td>{{ po.vendor_name or "" }}</td></tr>
+    <tr><th>PO amount</th><td>{{ po.po_amount if po.po_amount is not none else "" }}</td></tr>
+    <tr><th>Expected delivery</th><td>{{ po.expected_delivery_date or "" }}</td></tr>
+    <tr><th>Expires</th><td>{{ po.po_expiry_date or "" }}</td></tr>
+  </table>
+</div>
+
+<div class="row">
+  <div class="panel" style="flex:1;">
+    <h2 style="margin-top:0;">Customer destination</h2>
+    <p class="subtitle" style="margin:0;">This is Scootsy's receiving facility -- not a Drizzl warehouse.</p>
+    <table>
+      <tr><th>Facility ID</th><td>{{ po.destination_facility_id or "" }}</td></tr>
+      <tr><th>Facility name</th><td>{{ po.destination_facility_name or "" }}</td></tr>
+      <tr><th>City</th><td>{{ po.destination_city or "" }}</td></tr>
+    </table>
+  </div>
+  <div class="panel" style="flex:1;">
+    <h2 style="margin-top:0;">Drizzl source warehouse</h2>
+    <p class="subtitle" style="margin:0;">The Drizzl warehouse that will fulfill this order -- never inferred from the destination above.</p>
+    <p>
+      {% if po.source_location_name %}
+      <strong>{{ po.source_location_name }}</strong>
+      {% else %}
+      <span class="badge">Unassigned</span>
+      {% endif %}
+    </p>
+    {% if all_locations %}
+    <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:flex; gap:6px;">
+      <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
+      <select name="source_location_id" style="flex:1;">
+        <option value="">{{ "change to..." if po.source_location_name else "choose warehouse..." }}</option>
+        {% for l in all_locations %}
+        <option value="{{ l.id }}">{{ l.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Set</button>
+    </form>
+    {% else %}
+    <p class="empty">No Drizzl warehouse locations exist yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Product lines</h2>
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>Customer SKU</th><th>Customer description</th><th>Master product</th><th>Master barcode</th>
+      <th>Ordered</th><th>Received (PO export)</th><th>Balanced</th><th>MRP</th><th>Status</th>
+    </tr>
+    {% for line in po.lines %}
+    <tr>
+      <td>{{ line.external_sku or "" }}</td>
+      <td>{{ line.external_sku_description or "" }}</td>
+      <td>{{ line.master_product_name or "" }}</td>
+      <td>{{ line.master_barcode or "" }}</td>
+      <td>{{ "%.0f"|format(line.ordered_qty) if line.ordered_qty is not none else "" }}</td>
+      <td>{{ "%.0f"|format(line.received_qty) if line.received_qty is not none else "" }}</td>
+      <td>{{ "%.0f"|format(line.balanced_qty) if line.balanced_qty is not none else "" }}</td>
+      <td>{{ line.mrp if line.mrp is not none else "" }}</td>
+      <td>
+        {% if line.validation_status == "blocked" %}
+        <span class="badge badge-blocked">BLOCKED</span>
+        {% else %}
+        <span class="badge badge-ready">VALID</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% if line.validation_status == "blocked" and line.validation_errors %}
+    <tr>
+      <td colspan="9" style="padding-top:0;">
+        <ul style="margin:0 0 8px; padding-left:20px; color: var(--error); font-size:0.85rem;">
+          {% for err in line.validation_errors %}
+          <li>{{ err.message }}{% if err.value is defined and err.value %} -- {{ err.value }}{% endif %}</li>
+          {% endfor %}
+        </ul>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+  </div>
+  <p class="subtitle" style="margin-top:10px;">"Received (PO export)" is Scootsy's own PO-export metadata only -- it does not create any sale or inventory movement. That only ever happens from a separately uploaded GRN.</p>
+</div>
+
+<div class="panel">
+  <details class="details-toggle">
+    <summary>View raw source rows ({{ raw_rows|length }})</summary>
+    {% for r in raw_rows %}
+    <p class="subtitle" style="margin:10px 0 2px;">Source row {{ r.source_row_number }}</p>
+    <pre class="raw-row-pre">{{ r.raw_data | tojson(indent=2) }}</pre>
+    {% endfor %}
+  </details>
+</div>
+{% endblock %}
