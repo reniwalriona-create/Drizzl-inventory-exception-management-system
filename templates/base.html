@@ -110,6 +110,10 @@
     .badge-needs_source { background: var(--warn-bg); color: var(--warn); }
     .badge-blocked { background: var(--error-bg); color: var(--error); }
     .badge-posted { background: var(--accent); color: var(--accent-ink); }
+    .badge-verified { background: var(--success-bg); color: var(--success); }
+    .badge-quarantined { background: var(--error-bg); color: var(--error); }
+    .badge-warning { background: var(--warn-bg); color: var(--warn); }
+    .badge-error { background: var(--error-bg); color: var(--error); }
     .details-toggle summary { cursor: pointer; color: var(--accent); font-size: 0.85rem; margin: 10px 0; }
     .table-scroll { overflow-x: auto; }
     .table-scroll table { min-width: 800px; }
@@ -124,6 +128,7 @@
       <a href="{{ url_for('visualizations') }}" class="{{ 'active' if request.endpoint == 'visualizations' }}">Visualizations</a>
       <a href="{{ url_for('upload') }}" class="{{ 'active' if request.endpoint == 'upload' }}">Upload document</a>
       <a href="{{ url_for('po_import') }}" class="{{ 'active' if request.endpoint in ('po_import', 'po_import_review', 'staged_po_detail') }}">PO CSV import</a>
+      <a href="{{ url_for('grn_import') }}" class="{{ 'active' if request.endpoint in ('grn_import', 'grn_import_review', 'staged_grn_detail') }}">GRN Imports</a>
       <a href="{{ url_for('new_movement') }}" class="{{ 'active' if request.endpoint == 'new_movement' }}">Log movement</a>
       <a href="{{ url_for('lookup') }}" class="{{ 'active' if request.endpoint == 'lookup' }}">Look up PO/GRN/DN</a>
       <a href="{{ url_for('activity') }}" class="{{ 'active' if request.endpoint == 'activity' }}">Activity log</a>

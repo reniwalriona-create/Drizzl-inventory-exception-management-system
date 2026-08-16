@@ -486,20 +486,106 @@ def get_grn_import_batch(conn, batch_id):
     return dict(row) if row else None
 
 
+def grn_review_status(validation_status, po_verification_status):
+    """The UI-only review state (Phase 7) derived from Phase 6's two
+    independent status fields -- never stored, never overwrites either
+    one. 'quarantined' means either the intrinsic staging/normalization
+    findings are blocked (e.g. an unmapped SKU or an ambiguous duplicate-
+    DN row) OR PO verification hasn't succeeded (missing/voided/
+    mismatched PO, over-receipt, etc.) -- either is sufficient to keep a
+    GRN from being safe to post later. 'verified' means both layers are
+    clean; it still has ZERO official ledger effect (see
+    PROJECT_HANDOFF.md)."""
+    if validation_status == "blocked":
+        return "quarantined"
+    if po_verification_status != "verified":
+        return "quarantined"
+    return "verified"
+
+
+def _grn_comparison_totals(conn, staged_grn_id):
+    """Ordered/received/discrepancy totals for the batch review table's
+    summary columns -- computed from get_grn_po_comparison() (normalized
+    lines, never raw rows), restricted to rows that actually matched a PO
+    line (excludes not_on_po/sku_mismatch rows, which have no real ordered
+    baseline to sum against). Returns None if no PO comparison is
+    available yet (no official_po_id, or a legacy PO block)."""
+    comparison = get_grn_po_comparison(conn, staged_grn_id)
+    if not comparison:
+        return None
+    matched = [r for r in comparison if r["quantity_status"] in ("exact", "short", "over")]
+    if not matched:
+        return None
+    return {
+        "total_ordered_qty": sum(r["ordered_qty"] for r in matched),
+        "total_computed_discrepancy_qty": sum(r["computed_discrepancy_qty"] for r in matched),
+    }
+
+
 def list_staged_grns(conn, batch_id):
+    """Each staged GRN plus its normalized line count, normalized received
+    total (NEVER a raw-row sum -- see staged_grn_lines), matched official
+    PO number and Drizzl source warehouse (read-only, resolved through the
+    PO -- a GRN never has its own source), and derived review_status."""
     rows = conn.execute(
         """
         SELECT g.*, COUNT(l.staged_grn_line_id) AS line_count,
-               COALESCE(SUM(l.received_qty), 0) AS total_received_qty
+               COALESCE(SUM(l.received_qty), 0) AS total_received_qty,
+               po.po_number AS official_po_number,
+               loc.name AS official_source_location_name
         FROM staged_grns g
         LEFT JOIN staged_grn_lines l ON l.staged_grn_id = g.staged_grn_id
+        LEFT JOIN purchase_orders po ON po.po_id = g.official_po_id
+        LEFT JOIN locations loc ON loc.id = po.source_location_id
         WHERE g.batch_id = ?
-        GROUP BY g.staged_grn_id
+        GROUP BY g.staged_grn_id, po.po_number, loc.name
         ORDER BY g.staged_grn_id
         """,
         (batch_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        g = dict(r)
+        g["review_status"] = grn_review_status(g["validation_status"], g["po_verification_status"])
+        totals = _grn_comparison_totals(conn, g["staged_grn_id"])
+        g["total_ordered_qty"] = totals["total_ordered_qty"] if totals else None
+        g["total_computed_discrepancy_qty"] = totals["total_computed_discrepancy_qty"] if totals else None
+        all_errors = list(g["validation_errors"]) + list(g["po_verification_errors"])
+        primary_issue = next((e["message"] for e in all_errors if e.get("severity") == "error"), None)
+        g["primary_issue"] = primary_issue
+        result.append(g)
+    return result
+
+
+def get_grn_batch_summary(conn, batch_id):
+    """Server-derived counts for the batch review header -- never trust
+    the browser for this."""
+    grns = list_staged_grns(conn, batch_id)
+    counts = {"verified": 0, "quarantined": 0}
+    for g in grns:
+        counts[g["review_status"]] += 1
+    raw_rows = conn.execute("SELECT COUNT(*) AS n FROM grn_import_rows WHERE batch_id = ?", (batch_id,)).fetchone()["n"]
+    line_count = sum(g["line_count"] for g in grns)
+    return {"grns": len(grns), "raw_rows": raw_rows, "lines": line_count, **counts}
+
+
+def list_recent_grn_batches(conn, limit=20):
+    rows = conn.execute(
+        """
+        SELECT b.*, c.name AS customer_name
+        FROM grn_import_batches b
+        JOIN customers c ON c.id = b.customer_id
+        ORDER BY b.created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        batch = dict(r)
+        batch["summary"] = get_grn_batch_summary(conn, batch["batch_id"])
+        result.append(batch)
+    return result
 
 
 def get_staged_grn(conn, staged_grn_id):
@@ -507,12 +593,13 @@ def get_staged_grn(conn, staged_grn_id):
     if row is None:
         return None
     grn = dict(row)
+    grn["review_status"] = grn_review_status(grn["validation_status"], grn["po_verification_status"])
     grn["lines"] = get_staged_grn_lines(conn, staged_grn_id)
     return grn
 
 
 def get_staged_grn_lines(conn, staged_grn_id):
-    return [
+    lines = [
         dict(r) for r in conn.execute(
             """
             SELECT l.*, mp.barcode AS master_barcode, mp.product_name AS master_product_name
@@ -520,6 +607,48 @@ def get_staged_grn_lines(conn, staged_grn_id):
             LEFT JOIN master_products mp ON mp.product_id = l.product_id
             WHERE l.staged_grn_id = ?
             ORDER BY l.staged_grn_line_id
+            """,
+            (staged_grn_id,),
+        ).fetchall()
+    ]
+    for line in lines:
+        line["source_rows"] = get_line_source_rows(conn, line["staged_grn_line_id"])
+    return lines
+
+
+def get_line_source_rows(conn, staged_grn_line_id):
+    """The raw CSV row(s) that produced exactly this one normalized line,
+    read-only -- most useful for the collapsed duplicate-DN-representation
+    cases (2 raw rows -> 1 line), where the operator needs to see both
+    original rows without them ever being summed for anything
+    operational."""
+    return [
+        dict(r) for r in conn.execute(
+            """
+            SELECT r.row_id, r.source_row_number, r.raw_data
+            FROM staged_grn_line_source_rows s
+            JOIN grn_import_rows r ON r.row_id = s.raw_row_id
+            WHERE s.staged_grn_line_id = ?
+            ORDER BY r.source_row_number
+            """,
+            (staged_grn_line_id,),
+        ).fetchall()
+    ]
+
+
+def get_staged_grn_raw_rows(conn, staged_grn_id):
+    """Every raw CSV row belonging to this GRN (across all its normalized
+    lines), read-only -- for a GRN-level 'view all raw source rows'
+    section, mirroring po_csv_staging.get_staged_po_raw_rows()."""
+    return [
+        dict(r) for r in conn.execute(
+            """
+            SELECT DISTINCT r.row_id, r.source_row_number, r.raw_data
+            FROM staged_grn_lines l
+            JOIN staged_grn_line_source_rows s ON s.staged_grn_line_id = l.staged_grn_line_id
+            JOIN grn_import_rows r ON r.row_id = s.raw_row_id
+            WHERE l.staged_grn_id = ?
+            ORDER BY r.source_row_number
             """,
             (staged_grn_id,),
         ).fetchall()

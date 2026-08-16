@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Review GRN batch {{ batch.batch_id }} - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>GRN Import Review</h1>
+<p class="subtitle">Staged GRNs only -- a VERIFIED badge means the GRN passed validation and PO verification, not that inventory has been reduced. Nothing here has affected inventory, sales, or PO commitments.</p>
+
+<div class="panel">
+  <p class="subtitle" style="margin:0 0 6px;">
+    File: <strong>{{ batch.source_filename }}</strong> &middot;
+    Customer: <strong>{{ batch.customer_name }}</strong> &middot;
+    Uploaded: {{ batch.created_at }}
+  </p>
+  <p class="subtitle" style="margin:0;">
+    Raw rows: <strong>{{ summary.raw_rows }}</strong> &middot;
+    Normalized lines: <strong>{{ summary.lines }}</strong> &middot;
+    GRNs: <strong>{{ summary.grns }}</strong> &middot;
+    <span class="badge badge-verified">Verified {{ summary.verified }}</span>
+    <span class="badge badge-quarantined">Quarantined {{ summary.quarantined }}</span>
+  </p>
+</div>
+
+<div class="panel">
+  <p class="subtitle" style="margin:0 0 10px;">Quarantined GRNs are safely retained -- their raw and normalized data stays fully visible -- but cannot affect inventory until their issues are resolved.</p>
+  <form method="post" action="{{ url_for('revalidate_grn_batch_route', batch_id=batch.batch_id) }}" onsubmit="return confirm('Recompute PO verification for every staged GRN in this batch? This does not affect inventory.');">
+    <button type="submit">Revalidate Batch</button>
+  </form>
+</div>
+
+{% if not staged_grns %}
+<div class="panel">
+  <p class="empty">No GRNs in this batch.</p>
+</div>
+{% else %}
+<div class="panel">
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>GRN Number</th>
+      <th>PO Number</th>
+      <th>Destination</th>
+      <th>Invoice</th>
+      <th>Lines</th>
+      <th>Received</th>
+      <th>Discrepancy</th>
+      <th>Drizzl Source</th>
+      <th>Status</th>
+      <th>Issue</th>
+      <th></th>
+    </tr>
+    {% for g in staged_grns %}
+    <tr>
+      <td><a href="{{ url_for('staged_grn_detail', batch_id=batch.batch_id, staged_grn_id=g.staged_grn_id) }}">{{ g.external_grn_number }}</a></td>
+      <td>{{ g.external_po_number or "" }}</td>
+      <td>{{ g.facility_name or "" }}</td>
+      <td>{{ g.invoice_number or "" }}</td>
+      <td>{{ g.line_count }} line{{ "s" if g.line_count != 1 }}</td>
+      <td>{{ "%.0f"|format(g.total_received_qty) }} units</td>
+      <td>{{ "%.0f"|format(g.total_computed_discrepancy_qty) if g.total_computed_discrepancy_qty is not none else "—" }}</td>
+      <td>{{ g.official_source_location_name or "—" }}</td>
+      <td><span class="badge badge-{{ g.review_status }}">{{ g.review_status|upper }}</span></td>
+      <td style="max-width:220px;">{{ g.primary_issue or "—" }}</td>
+      <td><a href="{{ url_for('staged_grn_detail', batch_id=batch.batch_id, staged_grn_id=g.staged_grn_id) }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

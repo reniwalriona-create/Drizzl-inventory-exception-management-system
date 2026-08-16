@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}GRN CSV import - Drizzl Inventory{% endblock %}
+{% block content %}
+<h1>GRN CSV import</h1>
+<p class="subtitle">Scootsy's bulk GRN export -- a single CSV can contain many GRNs, each with several product/lot lines. GRNs are staged and verified before they can affect inventory -- uploading here does not reduce stock, create a sale, or release any PO commitment.</p>
+
+<div class="panel">
+  <form method="post" enctype="multipart/form-data">
+    <div class="field">
+      <label for="customer_id">Customer</label>
+      <select name="customer_id" id="customer_id" required>
+        <option value="">Select customer...</option>
+        {% for c in customers %}
+        <option value="{{ c.id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <p class="subtitle" style="margin-top:-8px;">This GRN file does not reliably identify the customer on its own (VendorName/SupplierCode identify Drizzl, the supplier -- not the buyer) -- choose it explicitly.</p>
+    <div class="field">
+      <label for="file">GRN CSV file</label>
+      <input type="file" name="file" id="file" accept=".csv" required>
+    </div>
+    <button type="submit">Stage GRN File</button>
+  </form>
+</div>
+
+<h2>Recent imports</h2>
+{% if batches %}
+<div class="panel">
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>File</th><th>Customer</th><th>Uploaded</th><th>GRNs</th>
+      <th>Verified</th><th>Quarantined</th><th></th>
+    </tr>
+    {% for b in batches %}
+    <tr>
+      <td>{{ b.source_filename }}</td>
+      <td>{{ b.customer_name }}</td>
+      <td>{{ b.created_at }}</td>
+      <td>{{ b.summary.grns }}</td>
+      <td>{{ b.summary.verified }}</td>
+      <td>{{ b.summary.quarantined }}</td>
+      <td><a href="{{ url_for('grn_import_review', batch_id=b.batch_id) }}">Review</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% else %}
+<div class="panel">
+  <p class="empty">No GRN imports yet.</p>
+</div>
+{% endif %}
+{% endblock %}

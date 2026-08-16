@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, abort, flash, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
+import grn_csv_staging
 import po_csv_staging
 import po_posting
 import reconcile
@@ -901,6 +902,174 @@ def post_staged_pos(batch_id):
     finally:
         conn.close()
     return redirect(url_for("po_import_review", batch_id=batch_id))
+
+
+@app.route("/grn-import", methods=["GET", "POST"])
+def grn_import():
+    """Phase 7: GRN CSV upload. Unlike the PO CSV, this export never
+    identifies the customer/buyer -- the operator must explicitly choose
+    one, never inferred/defaulted (see grn_csv_staging.py)."""
+    conn = get_connection()
+    try:
+        if request.method == "POST":
+            raw_customer_id = request.form.get("customer_id")
+            try:
+                customer_id = int(raw_customer_id) if raw_customer_id else None
+            except ValueError:
+                customer_id = None
+            if customer_id is None:
+                flash("Choose a customer before uploading.", "error")
+                return redirect(url_for("grn_import"))
+            if conn.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone() is None:
+                flash("That customer no longer exists.", "error")
+                return redirect(url_for("grn_import"))
+
+            file = request.files.get("file")
+            if not file or file.filename == "":
+                flash("Choose a CSV file to upload.", "error")
+                return redirect(url_for("grn_import"))
+
+            original_name = secure_filename(file.filename)
+            if not original_name.lower().endswith(".csv"):
+                flash("GRN CSV import expects a .csv file.", "error")
+                return redirect(url_for("grn_import"))
+
+            stored_name = f"grn_csv_{secrets.token_hex(8)}_{original_name}"
+            dest = UPLOAD_DIR / stored_name
+            file.save(dest)
+
+            try:
+                result = grn_csv_staging.stage_grn_csv(conn, str(dest), customer_id, filename=original_name)
+                if result["reused_existing_batch"]:
+                    flash("This GRN file was already imported for this customer. Opening the existing batch.", "warning")
+                else:
+                    summary = grn_csv_staging.get_grn_batch_summary(conn, result["batch_id"])
+                    log_activity(
+                        conn, "grn_csv_upload",
+                        f"Staged GRN CSV {original_name} ({summary['grns']} GRNs, {summary['lines']} normalized "
+                        f"lines from {summary['raw_rows']} raw rows)",
+                        "grn_import_batch", str(result["batch_id"]),
+                    )
+                    flash(
+                        f"Staged {summary['grns']} GRN(s), {summary['lines']} normalized line(s) from "
+                        f"{summary['raw_rows']} raw row(s) in {original_name}. Nothing has affected inventory "
+                        "or commitments -- review and verify below.",
+                        "success",
+                    )
+                conn.commit()
+                return redirect(url_for("grn_import_review", batch_id=result["batch_id"]))
+            except grn_csv_staging.FatalImportError as e:
+                conn.rollback()
+                flash(f"Could not import {original_name}: {e}", "error")
+                return redirect(url_for("grn_import"))
+            except Exception:
+                conn.rollback()
+                flash(f"Could not import {original_name} -- an unexpected error occurred.", "error")
+                return redirect(url_for("grn_import"))
+
+        return render_template(
+            "grn_import.html",
+            batches=grn_csv_staging.list_recent_grn_batches(conn),
+            customers=conn.execute("SELECT id, name FROM customers ORDER BY name").fetchall(),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/grn-import/<int:batch_id>")
+def grn_import_review(batch_id):
+    conn = get_connection()
+    try:
+        batch = grn_csv_staging.get_grn_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        return render_template(
+            "grn_import_review.html",
+            batch=batch,
+            staged_grns=grn_csv_staging.list_staged_grns(conn, batch_id),
+            summary=grn_csv_staging.get_grn_batch_summary(conn, batch_id),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/grn-import/<int:batch_id>/grn/<int:staged_grn_id>")
+def staged_grn_detail(batch_id, staged_grn_id):
+    conn = get_connection()
+    try:
+        batch = grn_csv_staging.get_grn_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        grn = grn_csv_staging.get_staged_grn(conn, staged_grn_id)
+        if grn is None or grn["batch_id"] != batch_id:
+            abort(404, description="This staged GRN does not belong to this batch.")
+
+        official_po = None
+        official_source_location_name = None
+        if grn["official_po_id"]:
+            official_po = conn.execute(
+                "SELECT * FROM purchase_orders WHERE po_id = ?", (grn["official_po_id"],)
+            ).fetchone()
+            if official_po and official_po["source_location_id"]:
+                loc = conn.execute(
+                    "SELECT name FROM locations WHERE id = ?", (official_po["source_location_id"],)
+                ).fetchone()
+                official_source_location_name = loc["name"] if loc else None
+
+        return render_template(
+            "staged_grn_detail.html",
+            batch=batch,
+            grn=grn,
+            official_po=official_po,
+            official_source_location_name=official_source_location_name,
+            comparison=grn_csv_staging.get_grn_po_comparison(conn, staged_grn_id),
+            raw_rows=grn_csv_staging.get_staged_grn_raw_rows(conn, staged_grn_id),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/grn-import/<int:batch_id>/revalidate", methods=["POST"])
+def revalidate_grn_batch_route(batch_id):
+    conn = get_connection()
+    try:
+        batch = grn_csv_staging.get_grn_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        results = grn_csv_staging.revalidate_grn_batch(conn, batch_id)
+        log_activity(
+            conn, "grn_batch_revalidated",
+            f"Revalidated {len(results)} staged GRN(s) in batch {batch_id}",
+            "grn_import_batch", str(batch_id),
+        )
+        conn.commit()
+        flash("GRN verification recalculated for the batch.", "success")
+    finally:
+        conn.close()
+    return redirect(url_for("grn_import_review", batch_id=batch_id))
+
+
+@app.route("/grn-import/<int:batch_id>/grn/<int:staged_grn_id>/revalidate", methods=["POST"])
+def revalidate_single_grn_route(batch_id, staged_grn_id):
+    conn = get_connection()
+    try:
+        batch = grn_csv_staging.get_grn_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        grn = grn_csv_staging.get_staged_grn(conn, staged_grn_id)
+        if grn is None or grn["batch_id"] != batch_id:
+            abort(404, description="This staged GRN does not belong to this batch.")
+        grn_csv_staging.validate_staged_grn(conn, staged_grn_id)
+        log_activity(
+            conn, "grn_revalidated",
+            f"Revalidated staged GRN {grn['external_grn_number']} in batch {batch_id}",
+            "staged_grn", str(staged_grn_id),
+        )
+        conn.commit()
+        flash("GRN verification recalculated.", "success")
+    finally:
+        conn.close()
+    return redirect(url_for("staged_grn_detail", batch_id=batch_id, staged_grn_id=staged_grn_id))
 
 
 if __name__ == "__main__":

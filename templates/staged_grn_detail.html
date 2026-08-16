@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}Staged GRN {{ grn.external_grn_number }} - Drizzl Inventory{% endblock %}
+{% block content %}
+<p class="subtitle" style="margin-bottom:6px;"><a href="{{ url_for('grn_import_review', batch_id=batch.batch_id) }}">&larr; Back to batch review</a></p>
+<div class="row" style="justify-content:space-between; align-items:flex-start;">
+  <h1 style="margin-bottom:4px;">Staged GRN {{ grn.external_grn_number }}</h1>
+  <span class="badge badge-{{ grn.review_status }}">{{ grn.review_status|upper }}</span>
+</div>
+<p class="subtitle">From batch {{ batch.batch_id }} ({{ batch.source_filename }}) &middot; a VERIFIED badge means this GRN passed validation and PO verification -- it is still staged and has NOT reduced inventory, created a sale, or released any PO commitment.</p>
+
+<div class="panel">
+  <form method="post" action="{{ url_for('revalidate_single_grn_route', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}" onsubmit="return confirm('Recompute PO verification for this GRN using its existing staged data? This does not reparse the file or affect inventory.');">
+    <button type="submit">Revalidate GRN</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">GRN details</h2>
+  <table>
+    <tr><th>Customer</th><td>{{ batch.customer_name }}</td></tr>
+    <tr><th>External PO Number</th><td>{{ grn.external_po_number or "" }}</td></tr>
+    <tr><th>Matched Official PO</th>
+      <td>
+        {% if official_po %}
+        <a href="{{ url_for('lookup', q=official_po.po_number) }}">{{ official_po.po_number }} (PO #{{ official_po.po_id }})</a>
+        {% else %}
+        Not currently available
+        {% endif %}
+      </td>
+    </tr>
+    <tr><th>Invoice Number</th><td>{{ grn.invoice_number or "" }}</td></tr>
+    <tr><th>Invoice Date</th><td>{{ grn.invoice_date or "" }}</td></tr>
+    <tr><th>GRN Created At</th><td>{{ grn.external_created_at or "" }}</td></tr>
+    <tr><th>Supplier Code</th><td>{{ grn.supplier_code or "" }}</td></tr>
+    <tr><th>Vendor Name</th><td>{{ grn.vendor_name or "" }}</td></tr>
+    <tr><th>DN Number</th><td>{{ grn.dn_number or "(none supplied)" }}</td></tr>
+  </table>
+</div>
+
+<div class="row">
+  <div class="panel" style="flex:1;">
+    <h2 style="margin-top:0;">Customer destination</h2>
+    <p class="subtitle" style="margin:0;">Scootsy's receiving facility -- not a Drizzl warehouse.</p>
+    <p><strong>{{ grn.facility_name or "—" }}</strong></p>
+  </div>
+  <div class="panel" style="flex:1;">
+    <h2 style="margin-top:0;">Drizzl source warehouse</h2>
+    <p class="subtitle" style="margin:0;">Read-only -- resolved from the matched official PO's source warehouse. Never inferred from the destination above, and never editable here.</p>
+    {% if official_source_location_name %}
+    <p><strong>{{ official_source_location_name }}</strong></p>
+    {% else %}
+    <p class="empty">Unavailable until PO verification succeeds.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">Document consistency vs. the matched official PO</h2>
+  {% if official_po %}
+  <table>
+    <tr><th></th><th>GRN says</th><th>Official PO says</th></tr>
+    <tr>
+      <td>Destination facility</td>
+      <td>{{ grn.facility_name or "—" }}</td>
+      <td>{{ official_po.destination_facility_name or "—" }}</td>
+    </tr>
+    <tr>
+      <td>Supplier code</td>
+      <td>{{ grn.supplier_code or "—" }}</td>
+      <td>{{ official_po.supplier_code or "—" }}</td>
+    </tr>
+    <tr>
+      <td>Vendor name</td>
+      <td>{{ grn.vendor_name or "—" }}</td>
+      <td>{{ official_po.vendor_name or "—" }}</td>
+    </tr>
+  </table>
+  {% else %}
+  <p class="empty">No official PO matched yet -- nothing to compare.</p>
+  {% endif %}
+</div>
+
+{% macro error_list(errors) %}
+{% if errors %}
+<ul style="margin:8px 0 0; padding-left:20px; font-size:0.85rem;">
+  {% for e in errors %}
+  <li>
+    <span class="badge badge-{{ 'error' if e.severity == 'error' else 'warning' }}">{{ (e.severity or 'error')|upper }}</span>
+    {{ e.message }}{% if e.field %} <span class="subtitle" style="display:inline;">({{ e.field }})</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endmacro %}
+
+{% if grn.validation_errors or grn.po_verification_errors %}
+<div class="panel">
+  <h2 style="margin-top:0;">Why is this GRN {{ grn.review_status }}?</h2>
+  {% if grn.validation_errors %}
+  <p class="subtitle" style="margin:0 0 2px;">Staging / normalization findings (header-level):</p>
+  {{ error_list(grn.validation_errors) }}
+  {% endif %}
+  {% if grn.po_verification_errors %}
+  <p class="subtitle" style="margin:14px 0 2px;">PO verification findings:</p>
+  {{ error_list(grn.po_verification_errors) }}
+  {% endif %}
+  {% if not grn.validation_errors and not grn.po_verification_errors %}
+  <p class="empty">No issues.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2 style="margin-top:0;">Normalized receipt lines</h2>
+  <p class="subtitle" style="margin:0 0 10px;">One row per physical receipt/lot -- never a raw CSV row count. A duplicated source representation (same lot, different DN metadata) is already collapsed into a single line here; a genuine second lot (different quantity/expiry) stays as its own line.</p>
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>Customer SKU</th><th>Customer Description</th><th>Master Product</th><th>Master Barcode</th>
+      <th>Received Qty</th><th>Source DN Qty</th><th>Lot MRP</th><th>Lot Expiry</th><th>Validation</th><th>Raw Rows</th>
+    </tr>
+    {% for line in grn.lines %}
+    <tr>
+      <td>{{ line.external_sku or "" }}</td>
+      <td>{{ line.external_sku_description or "" }}</td>
+      <td>{{ line.master_product_name or "Unmapped" }}</td>
+      <td>{{ line.master_barcode or "" }}</td>
+      <td>{{ "%.0f"|format(line.received_qty) if line.received_qty is not none else "" }}</td>
+      <td>{{ "%.0f"|format(line.dn_quantity) if line.dn_quantity is not none else "" }}</td>
+      <td>{{ line.lot_mrp if line.lot_mrp is not none else "" }}</td>
+      <td>{{ line.lot_expiry_date or "" }}</td>
+      <td>
+        {% if line.validation_status == "blocked" %}
+        <span class="badge badge-blocked">BLOCKED</span>
+        {% else %}
+        <span class="badge badge-ready">VALID</span>
+        {% endif %}
+      </td>
+      <td>
+        <details class="details-toggle">
+          <summary>{{ line.source_rows|length }} source row{{ "s" if line.source_rows|length != 1 }}</summary>
+          {% for r in line.source_rows %}
+          <p class="subtitle" style="margin:8px 0 2px;">Source row {{ r.source_row_number }}</p>
+          <pre class="raw-row-pre">{{ r.raw_data | tojson(indent=2) }}</pre>
+          {% endfor %}
+        </details>
+      </td>
+    </tr>
+    {% if line.validation_errors %}
+    <tr>
+      <td colspan="10" style="padding-top:0;">{{ error_list(line.validation_errors) }}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">PO vs. GRN comparison</h2>
+  {% if not official_po %}
+  <p class="empty">No PO comparison available -- no official PO matched yet.</p>
+  {% elif not comparison %}
+  <p class="empty">No PO comparison available -- the matched PO has legacy line(s) with no canonical product identity, so quantities can't be safely compared.</p>
+  {% else %}
+  <p class="subtitle" style="margin:0 0 10px;">Computed PO Shortfall = PO Ordered − normalized GRN Received. This is NOT the same as Source DN Quantity, which is only what the source file's own DN fields said.</p>
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>Customer SKU</th><th>Master Product</th><th>Master Barcode</th>
+      <th>PO Ordered</th><th>GRN Received</th><th>Computed PO Shortfall</th><th>Source DN Qty</th><th>Status</th>
+    </tr>
+    {% for row in comparison %}
+    <tr>
+      <td>{{ row.external_sku or "" }}</td>
+      <td>{{ row.product_name or "" }}</td>
+      <td>{{ row.barcode or "" }}</td>
+      <td>{{ "%.0f"|format(row.ordered_qty) }}</td>
+      <td>{{ "%.0f"|format(row.received_qty) }}</td>
+      <td>{{ "%.0f"|format(row.computed_discrepancy_qty) }}</td>
+      <td>{{ "%.0f"|format(row.source_dn_quantity) if row.source_dn_quantity is not none else "" }}</td>
+      <td>
+        {% if row.quantity_status == "exact" %}
+        <span class="badge badge-ready">EXACT</span>
+        {% elif row.quantity_status == "short" %}
+        <span class="badge badge-needs_source">SHORT</span>
+        {% elif row.quantity_status == "over" %}
+        <span class="badge badge-blocked">OVER</span>
+        {% else %}
+        <span class="badge badge-blocked">{{ row.quantity_status|upper }}</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <details class="details-toggle">
+    <summary>View all raw source rows for this GRN ({{ raw_rows|length }})</summary>
+    {% for r in raw_rows %}
+    <p class="subtitle" style="margin:10px 0 2px;">Source row {{ r.source_row_number }}</p>
+    <pre class="raw-row-pre">{{ r.raw_data | tojson(indent=2) }}</pre>
+    {% endfor %}
+  </details>
+</div>
+{% endblock %}
