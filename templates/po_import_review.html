@@ -16,6 +16,7 @@
     <span class="badge badge-ready">Ready {{ summary.ready }}</span>
     <span class="badge badge-needs_source">Needs source {{ summary.needs_source }}</span>
     <span class="badge badge-blocked">Blocked {{ summary.blocked }}</span>
+    <span class="badge badge-posted">Posted {{ summary.posted }}</span>
   </p>
 </div>
 
@@ -48,8 +49,8 @@
     {% for po in staged_pos %}
     <tr>
       <td>
-        {% if all_locations %}
-        <input type="checkbox" name="staged_po_ids" value="{{ po.staged_po_id }}" form="bulk-assign-form" class="po-checkbox">
+        {% if po.review_status != "posted" and all_locations %}
+        <input type="checkbox" name="staged_po_ids" value="{{ po.staged_po_id }}" form="bulk-assign-form" class="po-checkbox" data-status="{{ po.review_status }}">
         {% endif %}
       </td>
       <td><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">{{ po.external_po_number }}</a></td>
@@ -63,7 +64,7 @@
         {% else %}
         <span class="badge">Not assigned</span>
         {% endif %}
-        {% if all_locations %}
+        {% if po.review_status != "posted" and all_locations %}
         <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:inline-flex; gap:4px; margin-top:4px;">
           <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
           <select name="source_location_id" style="width:130px; padding:4px 6px;">
@@ -76,7 +77,12 @@
         </form>
         {% endif %}
       </td>
-      <td><span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span></td>
+      <td>
+        <span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span>
+        {% if po.review_status == "posted" %}
+        <div><a href="{{ url_for('lookup', q=po.external_po_number) }}" style="font-size:0.78rem;">Official PO #{{ po.posted_po_id }}</a></div>
+        {% endif %}
+      </td>
       <td><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">View</a></td>
     </tr>
     {% endfor %}
@@ -98,10 +104,50 @@
   <button type="submit">Apply to Selected</button>
 </form>
 
+{% if summary.ready %}
+<div class="panel">
+  <p class="subtitle" style="margin:0 0 10px;">
+    Posting creates official PO records and commitments in the ledger. It does not move physical inventory.
+  </p>
+  <form id="post-form" method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}"></form>
+  <button type="button" id="post-selected-btn">Post Selected Ready Orders</button>
+</div>
+{% endif %}
+
 <script>
   document.getElementById("select-all").addEventListener("change", function () {
     document.querySelectorAll(".po-checkbox").forEach(function (cb) { cb.checked = this.checked; }, this);
   });
+
+  var postBtn = document.getElementById("post-selected-btn");
+  if (postBtn) {
+    postBtn.addEventListener("click", function () {
+      var checked = Array.from(document.querySelectorAll(".po-checkbox:checked"));
+      var ready = checked.filter(function (cb) { return cb.dataset.status === "ready"; });
+      var skipped = checked.length - ready.length;
+      if (ready.length === 0) {
+        alert("Select at least one READY purchase order to post. Blocked or Needs Source orders can't be posted yet.");
+        return;
+      }
+      var msg = "Post " + ready.length + " selected order(s) to the official ledger?";
+      if (skipped > 0) {
+        msg += " (" + skipped + " selected order(s) that aren't READY will be left out.)";
+      }
+      msg += " This creates official PO records and commitments -- it does not move physical inventory.";
+      if (!confirm(msg)) return;
+
+      var form = document.getElementById("post-form");
+      form.querySelectorAll("input[name='staged_po_ids']").forEach(function (i) { i.remove(); });
+      ready.forEach(function (cb) {
+        var input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "staged_po_ids";
+        input.value = cb.value;
+        form.appendChild(input);
+      });
+      form.submit();
+    });
+  }
 </script>
 {% endif %}
 

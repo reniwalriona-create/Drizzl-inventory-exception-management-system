@@ -21,7 +21,7 @@
   <table>
     <tr>
       <th>File</th><th>Customer</th><th>Uploaded</th><th>Orders</th>
-      <th>Ready</th><th>Needs source</th><th>Blocked</th><th></th>
+      <th>Ready</th><th>Needs source</th><th>Blocked</th><th>Posted</th><th></th>
     </tr>
     {% for b in batches %}
     <tr>
@@ -32,6 +32,7 @@
       <td>{{ b.summary.ready }}</td>
       <td>{{ b.summary.needs_source }}</td>
       <td>{{ b.summary.blocked }}</td>
+      <td>{{ b.summary.posted }}</td>
       <td><a href="{{ url_for('po_import_review', batch_id=b.batch_id) }}">Review</a></td>
     </tr>
     {% endfor %}

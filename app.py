@@ -12,6 +12,7 @@ from flask import Flask, abort, flash, redirect, render_template, request, url_f
 from werkzeug.utils import secure_filename
 
 import po_csv_staging
+import po_posting
 import reconcile
 from activity_log import log_activity, recent_activity
 from db import get_connection
@@ -830,6 +831,73 @@ def assign_staged_source(batch_id):
         except ValueError as e:
             conn.rollback()
             flash(str(e), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("po_import_review", batch_id=batch_id))
+
+
+@app.route("/po-import/<int:batch_id>/post", methods=["POST"])
+def post_staged_pos(batch_id):
+    """Phase 5: posts the selected staged POs into the official ledger.
+    A human must explicitly choose which orders to post -- this never
+    happens automatically on source assignment or page load. Selected
+    posting is all-or-nothing: see po_posting.post_staged_purchase_orders()."""
+    conn = get_connection()
+    try:
+        batch = po_csv_staging.get_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+
+        try:
+            staged_po_ids = [int(i) for i in request.form.getlist("staged_po_ids")]
+        except ValueError:
+            flash("Invalid purchase order selection.", "error")
+            return redirect(url_for("po_import_review", batch_id=batch_id))
+        if not staged_po_ids:
+            flash("Choose at least one purchase order to post.", "error")
+            return redirect(url_for("po_import_review", batch_id=batch_id))
+
+        try:
+            result = po_posting.post_staged_purchase_orders(conn, batch_id, staged_po_ids)
+        except po_posting.PostingError as e:
+            conn.rollback()
+            flash(str(e), "error")
+            return redirect(url_for("po_import_review", batch_id=batch_id))
+
+        if result["rejected"]:
+            conn.rollback()
+            for staged_po_id, reasons in result["rejected"].items():
+                flash(f"Staged PO id {staged_po_id} was not posted: {' '.join(reasons)}", "error")
+            flash(
+                "No purchase orders were posted -- posting a selection is all-or-nothing, and "
+                "at least one selected order was not ready.",
+                "error",
+            )
+            return redirect(url_for("po_import_review", batch_id=batch_id))
+
+        if result["posted"]:
+            po_numbers = ", ".join(p["po_number"] for p in result["posted"])
+            log_activity(
+                conn, "po_posted",
+                f"Posted {len(result['posted'])} purchase order(s) to the official ledger from "
+                f"batch {batch_id}: {po_numbers}",
+                "po_import_batch", str(batch_id),
+            )
+        conn.commit()
+
+        if result["posted"]:
+            flash(
+                f"Posted {len(result['posted'])} purchase order(s) to the official ledger. "
+                "This creates official PO records and commitments -- it does not move physical "
+                "inventory.",
+                "success",
+            )
+        if result["already_posted"]:
+            flash(
+                f"{len(result['already_posted'])} selected order(s) were already posted -- no "
+                "changes made.",
+                "warning",
+            )
     finally:
         conn.close()
     return redirect(url_for("po_import_review", batch_id=batch_id))

@@ -113,15 +113,35 @@ def committed_quantity(conn):
     Returns one row per still-committed PO line: po_number, sku_code,
     sku_desc, qty, source_location (the PO's assigned Drizzl location
     name, or None if not yet allocated -- see purchase_orders.source_
-    location_id in schema.sql)."""
+    location_id in schema.sql), plus (Phase 5) product_id, barcode,
+    product_name, external_sku.
+
+    sku_code/sku_desc identity note: sku_code is deliberately STILL
+    item_code (mirrored external_sku for a Phase-5-posted canonical line,
+    same as always for a legacy PDF line) -- it remains the join key every
+    downstream consumer relies on (committed_by_location_sku() ->
+    stock_by_location()'s Committed/Uncommitted columns, and app.py's
+    manual-movement commitment-shortfall check via committed_at_location())
+    and those all key against inventory_movements.sku_code, which itself
+    stays in document-SKU space until GRN/movements get their own
+    product_id migration in a later phase. Switching sku_code to the
+    master barcode here would silently break both of those, since neither
+    consumer would ever key by barcode. sku_desc IS safe to upgrade,
+    because it's purely descriptive and never used as a join/lookup key
+    anywhere: it now prefers the canonical master_products.product_name
+    when a line has a product_id, falling back to the legacy item_desc
+    otherwise -- see PROJECT_HANDOFF.md."""
     return conn.execute(
         """
         SELECT
-            p.po_number, p.item_code AS sku_code, p.item_desc AS sku_desc, p.qty,
-            l.name AS source_location
+            p.po_number, p.item_code AS sku_code,
+            COALESCE(mp.product_name, p.item_desc) AS sku_desc, p.qty,
+            l.name AS source_location,
+            p.product_id, mp.barcode, mp.product_name, p.external_sku
         FROM po_line_items p
         JOIN purchase_orders po ON po.po_number = p.po_number AND po.voided = 0
         LEFT JOIN locations l ON l.id = po.source_location_id
+        LEFT JOIN master_products mp ON mp.product_id = p.product_id
         WHERE NOT EXISTS (
             SELECT 1
             FROM grn_receipts gr
@@ -424,13 +444,22 @@ def po_quantity_by_flavor(conn):
     PO, check that same math before trusting this total -- we don't yet
     know whether Scootsy's PDF would report that line's qty in packs or
     in individual cans, and summing the wrong one in would silently
-    understate or overstate the real can count."""
+    understate or overstate the real can count.
+
+    Description resolution, updated Phase 5: prefers the canonical
+    master_products.product_name (for lines with a product_id) over the
+    legacy products.sku_desc lookup by item_code -- without this, every
+    Phase-5-posted canonical PO line would show up here as flavor
+    "Unknown", since Phase 5 deliberately never creates a legacy
+    `products` row for a customer SKU. Grouping key is unchanged
+    (pli.item_code) -- this only changes which description wins."""
     rows = conn.execute(
         """
-        SELECT MAX(p.sku_desc) AS sku_desc, SUM(pli.qty) AS total_qty
+        SELECT MAX(COALESCE(mp.product_name, p.sku_desc)) AS sku_desc, SUM(pli.qty) AS total_qty
         FROM po_line_items pli
         JOIN purchase_orders po ON po.po_number = pli.po_number AND po.voided = 0
         LEFT JOIN products p ON p.sku_code = pli.item_code
+        LEFT JOIN master_products mp ON mp.product_id = pli.product_id
         GROUP BY pli.item_code
         """
     ).fetchall()

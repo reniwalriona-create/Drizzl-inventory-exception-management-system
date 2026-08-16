@@ -6,7 +6,34 @@
   <h1 style="margin-bottom:4px;">Staged PO {{ po.external_po_number }}</h1>
   <span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span>
 </div>
-<p class="subtitle">From batch {{ batch.batch_id }} ({{ batch.source_filename }}) &middot; not yet posted to the official PO ledger, inventory, or commitments.</p>
+<p class="subtitle">
+  From batch {{ batch.batch_id }} ({{ batch.source_filename }})
+  {% if po.review_status == "posted" %}
+  &middot; posted to the official PO ledger.
+  {% else %}
+  &middot; not yet posted to the official PO ledger, inventory, or commitments.
+  {% endif %}
+</p>
+
+{% if po.review_status == "posted" %}
+<div class="panel">
+  <p class="subtitle" style="margin:0;">
+    Posted as official PO <a href="{{ url_for('lookup', q=po.external_po_number) }}"><strong>#{{ po.posted_po_id }}</strong></a>
+    at {{ po.posted_at }}. This is now an official record and commitment -- its Drizzl source can no longer be
+    changed from this staging screen.
+  </p>
+</div>
+{% elif po.review_status == "ready" %}
+<div class="panel">
+  <p class="subtitle" style="margin:0 0 10px;">
+    This order is READY. Posting creates an official PO record and commitment -- it does not move physical inventory.
+  </p>
+  <form method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}" onsubmit="return confirm('Post PO {{ po.external_po_number }} to the official ledger? This creates an official PO record and commitment -- it does not move physical inventory.');">
+    <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
+    <button type="submit">Post This Order</button>
+  </form>
+</div>
+{% endif %}
 
 {% if po.validation_status == "blocked" and po.validation_errors %}
 <div class="panel">
@@ -53,7 +80,9 @@
       <span class="badge">Unassigned</span>
       {% endif %}
     </p>
-    {% if all_locations %}
+    {% if po.review_status == "posted" %}
+    <p class="subtitle" style="margin:0;">Locked -- this order has been posted to the official ledger.</p>
+    {% elif all_locations %}
     <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:flex; gap:6px;">
       <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
       <select name="source_location_id" style="flex:1;">

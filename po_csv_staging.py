@@ -347,14 +347,20 @@ def stage_po_csv(conn, csv_path, customer_id=None, filename=None):
     return {"batch_id": batch_id, "reused_existing_batch": False}
 
 
-def review_status(validation_status, source_location_id):
-    """The UI-only review state derived from Phase 3's validation_status
-    plus whether a Drizzl source has been manually assigned -- see
-    PROJECT_HANDOFF.md. Deliberately not a stored column: 'blocked' means
-    a data/product validation problem exists (source assignment does NOT
-    override this); 'needs_source' means the data is clean but no Drizzl
-    warehouse has been assigned yet; 'ready' means both are satisfied.
-    'ready' here never means posted to the official ledger."""
+def review_status(validation_status, source_location_id, posted_po_id=None):
+    """The UI-only review state derived from Phase 3's validation_status,
+    whether a Drizzl source has been manually assigned, and (Phase 5)
+    whether this staged PO has been posted to the official ledger -- see
+    PROJECT_HANDOFF.md. Deliberately not a stored column: 'posted' takes
+    precedence over everything else once posted_po_id is set (posting is
+    permanent -- a posted PO's validation_status/source can't un-post it);
+    'blocked' means a data/product validation problem exists (source
+    assignment does NOT override this); 'needs_source' means the data is
+    clean but no Drizzl warehouse has been assigned yet; 'ready' means
+    both are satisfied and it is eligible to be posted -- 'ready' never
+    means posted, only postable."""
+    if posted_po_id is not None:
+        return "posted"
     if validation_status == "blocked":
         return "blocked"
     if source_location_id is None:
@@ -395,7 +401,7 @@ def list_staged_pos(conn, batch_id):
     result = []
     for r in rows:
         po = dict(r)
-        po["review_status"] = review_status(po["validation_status"], po["source_location_id"])
+        po["review_status"] = review_status(po["validation_status"], po["source_location_id"], po["posted_po_id"])
         result.append(po)
     return result
 
@@ -404,7 +410,7 @@ def batch_summary(conn, batch_id):
     """Server-derived counts for the batch review header -- never trust
     the browser for this."""
     pos = list_staged_pos(conn, batch_id)
-    counts = {"ready": 0, "needs_source": 0, "blocked": 0}
+    counts = {"ready": 0, "needs_source": 0, "blocked": 0, "posted": 0}
     for po in pos:
         counts[po["review_status"]] += 1
     line_count = sum(po["line_count"] for po in pos)
@@ -443,7 +449,7 @@ def get_staged_po(conn, staged_po_id):
     if row is None:
         return None
     po = dict(row)
-    po["review_status"] = review_status(po["validation_status"], po["source_location_id"])
+    po["review_status"] = review_status(po["validation_status"], po["source_location_id"], po["posted_po_id"])
     po["lines"] = [
         dict(r) for r in conn.execute(
             """
@@ -479,10 +485,14 @@ def get_staged_po_raw_rows(conn, staged_po_id):
 def assign_source_location(conn, batch_id, staged_po_ids, source_location_id):
     """Assigns source_location_id to every staged PO in staged_po_ids, all
     of which must belong to batch_id. Atomic and strict: rejects the whole
-    operation (no partial update) if the location doesn't exist or any
-    staged_po_id is unknown or belongs to a different batch. Only ever
-    touches staged_purchase_orders -- never the official ledger. Caller
-    owns commit/rollback, consistent with stage_po_csv()."""
+    operation (no partial update) if the location doesn't exist, any
+    staged_po_id is unknown or belongs to a different batch, or any of
+    them has already been posted to the official ledger (Phase 5) -- once
+    posted_po_id is set, the reviewed source is what got written into the
+    official PO, and silently changing it here would desync the two
+    without any trace. Only ever touches staged_purchase_orders -- never
+    the official ledger. Caller owns commit/rollback, consistent with
+    stage_po_csv()."""
     staged_po_ids = list(staged_po_ids)
     if not staged_po_ids:
         raise ValueError("No staged purchase orders were selected.")
@@ -493,7 +503,7 @@ def assign_source_location(conn, batch_id, staged_po_ids, source_location_id):
 
     placeholders = ",".join(["?"] * len(staged_po_ids))
     rows = conn.execute(
-        f"SELECT staged_po_id, batch_id FROM staged_purchase_orders WHERE staged_po_id IN ({placeholders})",
+        f"SELECT staged_po_id, batch_id, posted_po_id FROM staged_purchase_orders WHERE staged_po_id IN ({placeholders})",
         tuple(staged_po_ids),
     ).fetchall()
     found_ids = {r["staged_po_id"] for r in rows}
@@ -503,6 +513,12 @@ def assign_source_location(conn, batch_id, staged_po_ids, source_location_id):
     wrong_batch = {r["staged_po_id"] for r in rows if r["batch_id"] != batch_id}
     if wrong_batch:
         raise ValueError(f"Staged PO id(s) {sorted(wrong_batch)} do not belong to this batch.")
+    already_posted = {r["staged_po_id"] for r in rows if r["posted_po_id"] is not None}
+    if already_posted:
+        raise ValueError(
+            f"Staged PO id(s) {sorted(already_posted)} have already been posted to the official "
+            "ledger and can no longer have their source warehouse changed here."
+        )
 
     conn.execute(
         f"UPDATE staged_purchase_orders SET source_location_id = ? WHERE staged_po_id IN ({placeholders})",

@@ -121,6 +121,21 @@ CREATE TABLE purchase_orders (
     facility_name               TEXT,
     grand_total                  REAL,
     source_file                   TEXT,
+    -- Phase 5: the CUSTOMER's receiving facility, mirrored from the staged
+    -- PO's destination_* fields at posting time -- NOT a Drizzl location,
+    -- never confused with source_location_id below. facility_name above is
+    -- kept in sync (= destination_facility_name) for older UI/reports.
+    destination_facility_id      TEXT,
+    destination_facility_name     TEXT,
+    destination_city               TEXT,
+    -- Phase 5: external PO metadata from the CSV staging snapshot, copied
+    -- through at posting time. The full raw CSV row remains in
+    -- po_import_rows regardless -- these are just the fields worth
+    -- surfacing at the official level too.
+    external_po_created_at          TIMESTAMP,
+    external_po_modified_at          TIMESTAMP,
+    external_status                   TEXT,
+    supplier_code                      TEXT,
     -- The Drizzl location expected to fulfill this PO -- e.g. "Mumbai".
     -- Completely separate from facility_name above, which is Scootsy's
     -- own receiving warehouse ("DEMO FACILITY A") -- never inferred from one
@@ -159,9 +174,30 @@ CREATE TABLE po_line_items (
     cess_rate        REAL,
     cess_amt         REAL,
     add_cess         REAL,
-    total            REAL
+    total            REAL,
+    -- Phase 5: canonical product identity alongside the legacy/document
+    -- identity. NULL for every line the legacy PDF path (upsert_po())
+    -- creates -- only po_posting.py populates these, and only from an
+    -- already-reviewed staged_po_lines snapshot, never re-resolved.
+    -- Deliberately NOT used as a join key anywhere yet (see
+    -- reconcile.committed_quantity()): item_code/item_desc are mirrored
+    -- from external_sku/external_sku_description on every canonical line
+    -- specifically so the existing item_code-keyed commitment/GRN-matching
+    -- code keeps working unmodified until inventory_movements/grn_receipts
+    -- get their own product_id migration in a later phase.
+    -- No inline REFERENCES here -- master_products is defined later in
+    -- this file; the FK is added below once it exists (same forward-
+    -- reference pattern migrations/002 handles for po_number).
+    product_id                INTEGER,
+    external_sku              TEXT,
+    external_sku_description  TEXT,
+    -- The CSV's single aggregate tax figure -- doesn't split into
+    -- cgst/sgst/igst/cess like the legacy PDF fields, so it isn't forced
+    -- into them. NULL for legacy PDF-sourced lines.
+    external_tax_amount       NUMERIC
 );
 CREATE INDEX idx_po_line_items_po_number ON po_line_items(po_number);
+CREATE INDEX idx_po_line_items_product_id ON po_line_items(product_id);
 
 -- Warehouse delivery slot bookings (from the appointment CSV export).
 CREATE TABLE appointments (
@@ -412,6 +448,10 @@ CREATE TABLE master_products (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Deferred FK -- po_line_items.product_id (Phase 5) is declared earlier in
+-- this file, before master_products exists yet.
+ALTER TABLE po_line_items ADD CONSTRAINT po_line_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES master_products(product_id);
+
 -- Bridges a customer's own SKU code to Drizzl's master product. Not
 -- assumed globally unique -- two different customers may reuse the same
 -- external_sku for two different products, so uniqueness is scoped to
@@ -511,6 +551,14 @@ CREATE TABLE staged_purchase_orders (
     validation_status            TEXT NOT NULL DEFAULT 'valid',
     validation_errors            JSONB NOT NULL DEFAULT '[]'::jsonb,
 
+    -- Phase 5: durable link to the official PO this staged record was
+    -- posted into, and when. NULL means never posted. UNIQUE so a staged
+    -- record can only ever point at one official PO, and no two staged
+    -- records can claim the same one. Never cleared/overwritten once set
+    -- -- see po_posting.py's idempotency handling.
+    posted_po_id                  BIGINT UNIQUE REFERENCES purchase_orders(po_id),
+    posted_at                      TIMESTAMPTZ,
+
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (batch_id, customer_id, external_po_number)
 );
@@ -518,6 +566,7 @@ CREATE INDEX idx_staged_pos_batch_id ON staged_purchase_orders(batch_id);
 CREATE INDEX idx_staged_pos_customer_external_po ON staged_purchase_orders(customer_id, external_po_number);
 CREATE INDEX idx_staged_pos_validation_status ON staged_purchase_orders(validation_status);
 CREATE INDEX idx_staged_pos_source_location_id ON staged_purchase_orders(source_location_id);
+CREATE INDEX idx_staged_pos_posted_po_id ON staged_purchase_orders(posted_po_id);
 
 -- One row per raw CSV product line -- deliberately no UNIQUE(staged_po_id,
 -- external_sku), since a future export may legitimately repeat a SKU on
@@ -553,8 +602,14 @@ CREATE TABLE staged_po_lines (
     validation_status                              TEXT NOT NULL DEFAULT 'valid',
     validation_errors                                JSONB NOT NULL DEFAULT '[]'::jsonb,
 
+    -- Phase 5: durable link to the official po_line_items row this staged
+    -- line was posted into. NULL means never posted. UNIQUE for the same
+    -- reason as staged_purchase_orders.posted_po_id above.
+    posted_line_item_id                                 INTEGER UNIQUE REFERENCES po_line_items(id),
+
     created_at                                        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX idx_staged_po_lines_posted_line_item_id ON staged_po_lines(posted_line_item_id);
 CREATE INDEX idx_staged_po_lines_staged_po_id ON staged_po_lines(staged_po_id);
 CREATE INDEX idx_staged_po_lines_product_id ON staged_po_lines(product_id);
 CREATE INDEX idx_staged_po_lines_external_sku ON staged_po_lines(external_sku);
