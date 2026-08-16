@@ -12,6 +12,7 @@ from flask import Flask, abort, flash, redirect, render_template, request, url_f
 from werkzeug.utils import secure_filename
 
 import grn_csv_staging
+import grn_posting
 import po_csv_staging
 import po_posting
 import reconcile
@@ -1016,12 +1017,32 @@ def staged_grn_detail(batch_id, staged_grn_id):
                 ).fetchone()
                 official_source_location_name = loc["name"] if loc else None
 
+        inventory_effect = []
+        official_grn = None
+        if grn["posted_grn_id"]:
+            official_grn = conn.execute(
+                "SELECT * FROM grn_receipts WHERE grn_id = ?", (grn["posted_grn_id"],)
+            ).fetchone()
+            inventory_effect = conn.execute(
+                """
+                SELECT m.quantity, m.product_id, mp.barcode, mp.product_name, lf.name AS from_location
+                FROM inventory_movements m
+                LEFT JOIN master_products mp ON mp.product_id = m.product_id
+                LEFT JOIN locations lf ON lf.id = m.location_from_id
+                WHERE m.reference_type = 'grn' AND m.reference_id = ? AND m.voided = 0
+                ORDER BY m.id
+                """,
+                (grn["external_grn_number"],),
+            ).fetchall()
+
         return render_template(
             "staged_grn_detail.html",
             batch=batch,
             grn=grn,
             official_po=official_po,
             official_source_location_name=official_source_location_name,
+            official_grn=official_grn,
+            inventory_effect=inventory_effect,
             comparison=grn_csv_staging.get_grn_po_comparison(conn, staged_grn_id),
             raw_rows=grn_csv_staging.get_staged_grn_raw_rows(conn, staged_grn_id),
         )
@@ -1070,6 +1091,73 @@ def revalidate_single_grn_route(batch_id, staged_grn_id):
     finally:
         conn.close()
     return redirect(url_for("staged_grn_detail", batch_id=batch_id, staged_grn_id=staged_grn_id))
+
+
+@app.route("/grn-import/<int:batch_id>/post", methods=["POST"])
+def post_staged_grns_route(batch_id):
+    """Phase 8: posts the selected staged GRNs into the official ledger --
+    creates official grn_receipts/grn_line_items, canonical SALE
+    inventory movements, and closes the matched PO's full commitment. A
+    human must explicitly choose which GRNs to post -- this never happens
+    automatically on verification/revalidation. Selected posting is
+    all-or-nothing: see grn_posting.post_staged_grns()."""
+    conn = get_connection()
+    try:
+        batch = grn_csv_staging.get_grn_import_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+
+        try:
+            staged_grn_ids = [int(i) for i in request.form.getlist("staged_grn_ids")]
+        except ValueError:
+            flash("Invalid GRN selection.", "error")
+            return redirect(url_for("grn_import_review", batch_id=batch_id))
+        if not staged_grn_ids:
+            flash("Choose at least one verified GRN to post.", "error")
+            return redirect(url_for("grn_import_review", batch_id=batch_id))
+
+        try:
+            result = grn_posting.post_staged_grns(conn, batch_id, staged_grn_ids)
+        except grn_posting.PostingError as e:
+            conn.rollback()
+            flash(str(e), "error")
+            return redirect(url_for("grn_import_review", batch_id=batch_id))
+
+        if result["rejected"]:
+            conn.rollback()
+            for staged_grn_id, reasons in result["rejected"].items():
+                flash(f"Staged GRN id {staged_grn_id} was not posted: {' '.join(reasons)}", "error")
+            flash(
+                "No GRNs were posted -- posting a selection is all-or-nothing, and at least one "
+                "selected GRN was not ready.",
+                "error",
+            )
+            return redirect(url_for("grn_import_review", batch_id=batch_id))
+
+        if result["posted"]:
+            grn_numbers = ", ".join(p["grn_number"] for p in result["posted"])
+            log_activity(
+                conn, "grn_posted",
+                f"Posted {len(result['posted'])} GRN(s) to the official ledger from batch {batch_id}: {grn_numbers}",
+                "grn_import_batch", str(batch_id),
+            )
+        conn.commit()
+
+        if result["posted"]:
+            flash(
+                f"Posted {len(result['posted'])} GRN(s) to the official ledger. This created official "
+                "receipt records, reduced inventory by the normalized received quantities, and closed "
+                "the related PO commitments.",
+                "success",
+            )
+        if result["already_posted"]:
+            flash(
+                f"{len(result['already_posted'])} selected GRN(s) were already posted -- no changes made.",
+                "warning",
+            )
+    finally:
+        conn.close()
+    return redirect(url_for("grn_import_review", batch_id=batch_id))
 
 
 if __name__ == "__main__":

@@ -486,16 +486,23 @@ def get_grn_import_batch(conn, batch_id):
     return dict(row) if row else None
 
 
-def grn_review_status(validation_status, po_verification_status):
-    """The UI-only review state (Phase 7) derived from Phase 6's two
-    independent status fields -- never stored, never overwrites either
-    one. 'quarantined' means either the intrinsic staging/normalization
+def grn_review_status(validation_status, po_verification_status, posted_grn_id=None):
+    """The UI-only review state derived from Phase 6/7's two independent
+    status fields plus (Phase 8) whether this staged GRN has been posted
+    -- never stored, never overwrites any of the three underlying
+    fields. 'posted' takes precedence over everything else once
+    posted_grn_id is set -- posting is permanent, a posted record's
+    validation_status/po_verification_status can no longer change it (see
+    validate_staged_grn(), which now refuses to touch a posted record).
+    'quarantined' means either the intrinsic staging/normalization
     findings are blocked (e.g. an unmapped SKU or an ambiguous duplicate-
     DN row) OR PO verification hasn't succeeded (missing/voided/
     mismatched PO, over-receipt, etc.) -- either is sufficient to keep a
-    GRN from being safe to post later. 'verified' means both layers are
-    clean; it still has ZERO official ledger effect (see
-    PROJECT_HANDOFF.md)."""
+    GRN from being postable. 'verified' means both layers are clean and
+    it is eligible to be posted -- 'verified' never means posted, only
+    postable, until posted_grn_id is actually set."""
+    if posted_grn_id is not None:
+        return "posted"
     if validation_status == "blocked":
         return "quarantined"
     if po_verification_status != "verified":
@@ -546,7 +553,7 @@ def list_staged_grns(conn, batch_id):
     result = []
     for r in rows:
         g = dict(r)
-        g["review_status"] = grn_review_status(g["validation_status"], g["po_verification_status"])
+        g["review_status"] = grn_review_status(g["validation_status"], g["po_verification_status"], g["posted_grn_id"])
         totals = _grn_comparison_totals(conn, g["staged_grn_id"])
         g["total_ordered_qty"] = totals["total_ordered_qty"] if totals else None
         g["total_computed_discrepancy_qty"] = totals["total_computed_discrepancy_qty"] if totals else None
@@ -561,7 +568,7 @@ def get_grn_batch_summary(conn, batch_id):
     """Server-derived counts for the batch review header -- never trust
     the browser for this."""
     grns = list_staged_grns(conn, batch_id)
-    counts = {"verified": 0, "quarantined": 0}
+    counts = {"verified": 0, "quarantined": 0, "posted": 0}
     for g in grns:
         counts[g["review_status"]] += 1
     raw_rows = conn.execute("SELECT COUNT(*) AS n FROM grn_import_rows WHERE batch_id = ?", (batch_id,)).fetchone()["n"]
@@ -593,7 +600,7 @@ def get_staged_grn(conn, staged_grn_id):
     if row is None:
         return None
     grn = dict(row)
-    grn["review_status"] = grn_review_status(grn["validation_status"], grn["po_verification_status"])
+    grn["review_status"] = grn_review_status(grn["validation_status"], grn["po_verification_status"], grn["posted_grn_id"])
     grn["lines"] = get_staged_grn_lines(conn, staged_grn_id)
     return grn
 
@@ -753,6 +760,19 @@ def validate_staged_grn(conn, staged_grn_id):
     staged_grn = conn.execute("SELECT * FROM staged_grns WHERE staged_grn_id = ?", (staged_grn_id,)).fetchone()
     if staged_grn is None:
         raise ValueError(f"Staged GRN id {staged_grn_id} does not exist.")
+
+    # Phase 8: a posted staged GRN is an immutable audit snapshot -- its
+    # official_po_id/po_verification_status must never move out from
+    # under the official grn_receipts row it already produced (and,
+    # concretely, re-running the official_grn_already_exists check below
+    # on a posted record would incorrectly flag it against its OWN
+    # official GRN). Return the current stored state untouched.
+    if staged_grn["posted_grn_id"] is not None:
+        return {
+            "official_po_id": staged_grn["official_po_id"],
+            "po_verification_status": staged_grn["po_verification_status"],
+            "po_verification_errors": staged_grn["po_verification_errors"],
+        }
 
     errors = []
     official_po_id = None

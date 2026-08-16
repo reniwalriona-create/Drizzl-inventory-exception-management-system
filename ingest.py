@@ -341,13 +341,38 @@ def _record_grn_sale(conn, grn_number, grn_date, sku_code, received_qty, source_
         )
 
 
+def _canonical_sku_code(conn, product_id):
+    """The one authoritative compatibility sku_code for a canonical
+    movement/flag -- always derived fresh from master_products.barcode,
+    never trusted from a caller-supplied value. This is what stops a
+    future bug like product_id=Passionfruit + sku_code=<some customer's
+    SKU> from ever creating an inconsistent inventory identity (Phase 8,
+    per PROJECT_HANDOFF.md)."""
+    row = conn.execute("SELECT barcode FROM master_products WHERE product_id = ?", (product_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Master Product {product_id} does not exist.")
+    return row["barcode"]
+
+
 def record_movement(conn, movement_date, sku_code, movement_type, quantity,
                      location_from=None, location_to=None, reason=None,
                      reference_type=None, reference_id=None, notes=None,
                      recorded_by=None, sku_desc=None,
                      location_from_type="own_facility", location_to_type="own_facility",
-                     negative_override_reason=None, commitment_override_reason=None):
-    sku_code = _ensure_product(conn, sku_code, sku_desc)
+                     negative_override_reason=None, commitment_override_reason=None,
+                     product_id=None, source_grn_line_item_id=None):
+    """product_id=None (every pre-Phase-8 caller) is the legacy path,
+    completely unchanged: sku_code is upserted into the legacy `products`
+    table via _ensure_product(). product_id=<a real Master Product> is
+    the Phase 8 canonical path: sku_code is IGNORED and re-derived fresh
+    from master_products.barcode (see _canonical_sku_code()) -- the
+    caller's sku_code argument is never trusted, so it's safe to pass
+    None for it on a canonical call. _ensure_product()/legacy `products`
+    are never touched on this path."""
+    if product_id is not None:
+        sku_code = _canonical_sku_code(conn, product_id)
+    else:
+        sku_code = _ensure_product(conn, sku_code, sku_desc)
     from_id = _ensure_location(conn, location_from, location_from_type) if location_from else None
     to_id = _ensure_location(conn, location_to, location_to_type) if location_to else None
     cur = conn.execute(
@@ -356,34 +381,41 @@ def record_movement(conn, movement_date, sku_code, movement_type, quantity,
             (movement_date, sku_code, movement_type, quantity,
              location_from_id, location_to_id, reason, reference_type,
              reference_id, notes, recorded_by, negative_override_reason,
-             commitment_override_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             commitment_override_reason, product_id, source_grn_line_item_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
         (movement_date, sku_code, movement_type, quantity, from_id, to_id,
          reason, reference_type, reference_id, notes, recorded_by,
-         negative_override_reason, commitment_override_reason),
+         negative_override_reason, commitment_override_reason,
+         product_id, source_grn_line_item_id),
     )
     return cur.fetchone()["id"]
 
 
 def record_inventory_flag(conn, sku_code, location_name, source, available_before,
                            requested_qty, resulting_balance, movement_id=None,
-                           reference_id=None, reason=None):
+                           reference_id=None, reason=None, product_id=None):
     """Logs a negative-inventory incident -- either a human's explicit
     override on a manual transfer/sale/loss, or a real GRN's sale
     movement pushing its source location below zero. See inventory_flags
     in schema.sql; surfaced on the dashboard by
-    reconcile.unresolved_inventory_flags()."""
+    reconcile.unresolved_inventory_flags(). product_id=<a real Master
+    Product> (Phase 8 canonical path) re-derives sku_code from
+    master_products.barcode the same authoritative way record_movement()
+    does -- never trusts a caller-supplied sku_code alongside a
+    product_id."""
+    if product_id is not None:
+        sku_code = _canonical_sku_code(conn, product_id)
     conn.execute(
         """
         INSERT INTO inventory_flags
             (movement_id, sku_code, location_name, source, reference_id,
-             available_before, requested_qty, resulting_balance, reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             available_before, requested_qty, resulting_balance, reason, product_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (movement_id, sku_code, location_name, source, reference_id,
-         available_before, requested_qty, resulting_balance, reason),
+         available_before, requested_qty, resulting_balance, reason, product_id),
     )
 
 

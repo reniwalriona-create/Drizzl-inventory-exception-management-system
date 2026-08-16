@@ -8,30 +8,49 @@ def stock_by_location(conn, location=None, sku_code=None):
     """Current stock per SKU per location, derived from the ledger itself
     -- not stored anywhere, always computed fresh from history. Also
     attaches two derived columns per row:
-      qty_committed   = committed_by_location_sku()'s value for this
-                        (location, SKU) -- inventory reserved against an
-                        open, unresolved PO allocated to this location.
+      qty_committed   = inventory reserved against an open, unresolved PO
+                        allocated to this location (see below for which
+                        identity space this is looked up in).
       qty_uncommitted = qty_on_hand - qty_committed -- what's actually
                         free to promise/move without eating into an open
                         PO's reserved stock.
     A PO never creates a ledger movement (an order still isn't a stock
     event -- qty_on_hand is exactly the same as before this existed), so
-    a SKU can have real committed quantity at a location with zero
-    physical stock so far; a synthetic qty_on_hand=0 row is added for
-    that case so the commitment isn't invisible just because nothing's
-    arrived yet. Returns plain dicts (not sqlite3.Row) since these two
-    columns are computed in Python, not SQL."""
+    a SKU/product can have real committed quantity at a location with
+    zero physical stock so far; a synthetic qty_on_hand=0 row is added
+    for that case so the commitment isn't invisible just because
+    nothing's arrived yet. Returns plain dicts (not sqlite3.Row) since
+    these two columns are computed in Python, not SQL.
+
+    Dual identity (Phase 8): product_id, not the sku_code string, is the
+    true internal inventory identity for a canonical movement --
+    canonical rows (product_id IS NOT NULL) are grouped by product_id and
+    matched against committed_by_location_product(); legacy/manual rows
+    (product_id IS NULL) keep grouping by the sku_code string and match
+    against committed_by_location_sku(), exactly as before Phase 8. The
+    SQL groups by (product_id, sku_code) together -- safe and never
+    ambiguous, because product_id is NULL for every legacy row and a
+    real, non-NULL value for every canonical row, so a canonical group
+    and a legacy group can never collide regardless of what either
+    sku_code string happens to contain. The legacy-products description
+    join is explicitly restricted to product_id IS NULL rows so a
+    coincidental sku_code/barcode text match could never pull in the
+    wrong description either."""
     query = """
-        SELECT l.name AS location, m.sku_code, MAX(p.sku_desc) AS sku_desc, SUM(delta) AS qty_on_hand
+        SELECT l.name AS location, m.product_id, m.sku_code,
+               COALESCE(MAX(mp.product_name), MAX(p.sku_desc)) AS sku_desc,
+               MAX(mp.barcode) AS barcode,
+               SUM(delta) AS qty_on_hand
         FROM (
-            SELECT location_to_id AS location_id, sku_code, quantity AS delta
+            SELECT location_to_id AS location_id, sku_code, product_id, quantity AS delta
             FROM inventory_movements WHERE location_to_id IS NOT NULL AND voided = 0
             UNION ALL
-            SELECT location_from_id AS location_id, sku_code, -quantity AS delta
+            SELECT location_from_id AS location_id, sku_code, product_id, -quantity AS delta
             FROM inventory_movements WHERE location_from_id IS NOT NULL AND voided = 0
         ) m
         JOIN locations l ON l.id = m.location_id
-        LEFT JOIN products p ON p.sku_code = m.sku_code
+        LEFT JOIN products p ON p.sku_code = m.sku_code AND m.product_id IS NULL
+        LEFT JOIN master_products mp ON mp.product_id = m.product_id
     """
     conditions, params = [], []
     if location:
@@ -42,29 +61,53 @@ def stock_by_location(conn, location=None, sku_code=None):
         params.append(sku_code)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " GROUP BY l.name, m.sku_code HAVING SUM(delta) != 0 ORDER BY l.name, qty_on_hand DESC"
+    query += " GROUP BY l.name, m.product_id, m.sku_code HAVING SUM(delta) != 0 ORDER BY l.name, qty_on_hand DESC"
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
-    committed_map = committed_by_location_sku(conn)
-    seen = {(r["location"], r["sku_code"]) for r in rows}
+    committed_sku_map = committed_by_location_sku(conn)
+    committed_product_map = committed_by_location_product(conn)
+    seen_product = {(r["location"], r["product_id"]) for r in rows if r["product_id"] is not None}
+    seen_sku = {(r["location"], r["sku_code"]) for r in rows if r["product_id"] is None}
     for r in rows:
-        c = committed_map.get((r["location"], r["sku_code"]), 0)
+        if r["product_id"] is not None:
+            c = committed_product_map.get((r["location"], r["product_id"]), 0)
+        else:
+            c = committed_sku_map.get((r["location"], r["sku_code"]), 0)
         r["qty_committed"] = c
         r["qty_uncommitted"] = r["qty_on_hand"] - c
 
+    master_desc = None
+    for (loc, product_id), c in committed_product_map.items():
+        if location and loc != location:
+            continue
+        if sku_code:  # sku_code filter is legacy-identity space only, see docstring
+            continue
+        if (loc, product_id) in seen_product:
+            continue
+        if master_desc is None:
+            master_desc = {
+                p["product_id"]: (p["barcode"], p["product_name"])
+                for p in conn.execute("SELECT product_id, barcode, product_name FROM master_products").fetchall()
+            }
+        barcode, product_name = master_desc.get(product_id, (None, None))
+        rows.append({
+            "location": loc, "product_id": product_id, "sku_code": barcode, "sku_desc": product_name,
+            "barcode": barcode, "qty_on_hand": 0, "qty_committed": c, "qty_uncommitted": 0 - c,
+        })
+
     product_desc = None
-    for (loc, sku), c in committed_map.items():
+    for (loc, sku), c in committed_sku_map.items():
         if location and loc != location:
             continue
         if sku_code and sku != sku_code:
             continue
-        if (loc, sku) in seen:
+        if (loc, sku) in seen_sku:
             continue
         if product_desc is None:
             product_desc = {p["sku_code"]: p["sku_desc"] for p in conn.execute("SELECT sku_code, sku_desc FROM products").fetchall()}
         rows.append({
-            "location": loc, "sku_code": sku, "sku_desc": product_desc.get(sku),
-            "qty_on_hand": 0, "qty_committed": c, "qty_uncommitted": 0 - c,
+            "location": loc, "product_id": None, "sku_code": sku, "sku_desc": product_desc.get(sku),
+            "barcode": None, "qty_on_hand": 0, "qty_committed": c, "qty_uncommitted": 0 - c,
         })
 
     rows.sort(key=lambda r: (r["location"], -r["qty_on_hand"]))
@@ -96,19 +139,37 @@ def current_balance(conn, location_name, sku_code):
     return row["qty_on_hand"]
 
 
+def current_balance_by_product(conn, location_id, product_id):
+    """Current on-hand quantity for exactly one canonical Master Product
+    at exactly one Drizzl location -- the Phase 8 canonical counterpart
+    to current_balance(), used by grn_posting.py instead of it. Operates
+    strictly on product_id + location_id (never a SKU string of any
+    kind), and only ever sums movements that themselves carry that same
+    product_id -- a legacy/manual movement (product_id IS NULL) never
+    contributes here, and this never contributes to current_balance()'s
+    legacy sku_code-keyed total either. The two identity spaces are
+    separate pools during the transition (see PROJECT_HANDOFF.md) -- not
+    an oversight, a deliberate refusal to guess a legacy-SKU-to-
+    product_id mapping retroactively. Does NOT hide an exact-zero
+    balance, same reasoning as current_balance()."""
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(delta), 0) AS qty_on_hand FROM (
+            SELECT quantity AS delta FROM inventory_movements
+            WHERE location_to_id = ? AND product_id = ? AND voided = 0
+            UNION ALL
+            SELECT -quantity AS delta FROM inventory_movements
+            WHERE location_from_id = ? AND product_id = ? AND voided = 0
+        )
+        """,
+        (location_id, product_id, location_id, product_id),
+    ).fetchone()
+    return row["qty_on_hand"]
+
+
 def committed_quantity(conn):
     """Every still-open (unresolved) PO line's committed quantity --
-    reserved against that PO until a GRN resolves it. This is
-    deliberately NOT `ordered - received`: the moment ANY non-voided GRN
-    line exists for a (po_number, sku_code) pair, that line's commitment
-    drops to 0 entirely and for good, regardless of how much was
-    actually received. A shortfall between expected and received
-    becomes a discrepancy (see grn_discrepancies()), not a remaining PO
-    commitment -- Drizzl isn't expected to deliver the difference again
-    against the same PO; that's a separate discrepancy/financial
-    process. If the resolving GRN is later voided, the commitment
-    correctly reappears here (the EXISTS check below only counts
-    non-voided GRNs).
+    reserved against that PO until a GRN resolves it.
 
     Returns one row per still-committed PO line: po_number, sku_code,
     sku_desc, qty, source_location (the PO's assigned Drizzl location
@@ -119,18 +180,37 @@ def committed_quantity(conn):
     sku_code/sku_desc identity note: sku_code is deliberately STILL
     item_code (mirrored external_sku for a Phase-5-posted canonical line,
     same as always for a legacy PDF line) -- it remains the join key every
-    downstream consumer relies on (committed_by_location_sku() ->
-    stock_by_location()'s Committed/Uncommitted columns, and app.py's
-    manual-movement commitment-shortfall check via committed_at_location())
-    and those all key against inventory_movements.sku_code, which itself
-    stays in document-SKU space until GRN/movements get their own
-    product_id migration in a later phase. Switching sku_code to the
-    master barcode here would silently break both of those, since neither
-    consumer would ever key by barcode. sku_desc IS safe to upgrade,
-    because it's purely descriptive and never used as a join/lookup key
-    anywhere: it now prefers the canonical master_products.product_name
-    when a line has a product_id, falling back to the legacy item_desc
-    otherwise -- see PROJECT_HANDOFF.md."""
+    downstream consumer relies on (committed_by_location_sku() -> the
+    manual-movement commitment-shortfall check via committed_at_location(),
+    which only ever knows a legacy SKU string typed into the form, never a
+    product_id) and those all key against inventory_movements.sku_code,
+    which itself stays in document-SKU space for legacy/manual movements.
+    Switching sku_code to the master barcode here would silently break
+    that check. sku_desc IS safe to upgrade, because it's purely
+    descriptive and never used as a join/lookup key anywhere: it now
+    prefers the canonical master_products.product_name when a line has a
+    product_id, falling back to the legacy item_desc otherwise. For
+    canonical (product_id-identified) physical stock, see
+    committed_by_location_product() instead -- stock_by_location() uses
+    that one, product_id-keyed, to merge commitment onto canonical rows;
+    committed_by_location_sku() stays reserved for the legacy/manual path.
+    See PROJECT_HANDOFF.md.
+
+    Release rule, two branches (Phase 8):
+      canonical PO line (product_id IS NOT NULL): the moment ANY
+        non-voided OFFICIAL canonical GRN exists for this PO's po_id --
+        regardless of which SKUs that GRN's own lines cover -- the
+        ENTIRE PO's commitment closes, header-level, not per-line. A
+        product completely absent from the GRN still releases; the gap
+        becomes a discrepancy (grn_csv_staging.get_grn_po_comparison()),
+        never a re-armed commitment. If the resolving GRN is later
+        voided, the commitment correctly reappears (gr.voided = 0 below).
+      legacy PO line (product_id IS NULL): unchanged, original per-
+        (po_number, sku_code) GRN-line-match behavior -- deliberately NOT
+        `ordered - received`, the moment any non-voided GRN line exists
+        for that (po_number, sku_code) pair, the line's commitment drops
+        to 0 for good; a shortfall becomes a discrepancy (see
+        grn_discrepancies()), not a remaining PO commitment."""
     return conn.execute(
         """
         SELECT
@@ -142,14 +222,22 @@ def committed_quantity(conn):
         JOIN purchase_orders po ON po.po_number = p.po_number AND po.voided = 0
         LEFT JOIN locations l ON l.id = po.source_location_id
         LEFT JOIN master_products mp ON mp.product_id = p.product_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM grn_receipts gr
-            JOIN grn_line_items gli ON gli.grn_number = gr.grn_number
-            WHERE gr.po_number = p.po_number
-              AND gr.voided = 0
-              AND gli.sku_code = p.item_code
-        )
+        WHERE
+            CASE WHEN p.product_id IS NOT NULL THEN
+                NOT EXISTS (
+                    SELECT 1 FROM grn_receipts gr
+                    WHERE gr.po_id = po.po_id AND gr.voided = 0
+                )
+            ELSE
+                NOT EXISTS (
+                    SELECT 1
+                    FROM grn_receipts gr
+                    JOIN grn_line_items gli ON gli.grn_number = gr.grn_number
+                    WHERE gr.po_number = p.po_number
+                      AND gr.voided = 0
+                      AND gli.sku_code = p.item_code
+                )
+            END
         ORDER BY p.po_number, p.item_code
         """
     ).fetchall()
@@ -158,14 +246,36 @@ def committed_quantity(conn):
 def committed_by_location_sku(conn):
     """committed_quantity(), summed by (Drizzl source location, SKU) --
     only for PO lines that actually have a source location assigned.
-    Feeds the Committed/Uncommitted columns in stock_by_location() and
-    the commitment-shortfall warning in app.py's new_movement(). Returns
-    a plain {(location, sku_code): qty} dict."""
+    Feeds the commitment-shortfall warning in app.py's new_movement(),
+    which only ever knows a legacy SKU string typed into the manual-
+    movement form, never a product_id -- this stays sku_code-keyed for
+    exactly that reason, unchanged by Phase 8. For canonical
+    (product_id-identified) physical stock, stock_by_location() uses
+    committed_by_location_product() instead, not this one. Returns a
+    plain {(location, sku_code): qty} dict."""
     by_key = {}
     for r in committed_quantity(conn):
         if not r["source_location"]:
             continue
         key = (r["source_location"], r["sku_code"])
+        by_key[key] = by_key.get(key, 0) + r["qty"]
+    return by_key
+
+
+def committed_by_location_product(conn):
+    """committed_quantity(), summed by (Drizzl source location,
+    product_id) -- companion to committed_by_location_sku() above, for
+    CANONICAL PO lines only (product_id IS NOT NULL). This is what
+    stock_by_location() uses to merge commitment onto a canonical
+    (product_id-grouped) physical stock row, so that merge never depends
+    on sku_code string equality -- product_id is the true internal
+    inventory identity (Phase 8, see PROJECT_HANDOFF.md). Returns a plain
+    {(location, product_id): qty} dict."""
+    by_key = {}
+    for r in committed_quantity(conn):
+        if not r["source_location"] or r["product_id"] is None:
+            continue
+        key = (r["source_location"], r["product_id"])
         by_key[key] = by_key.get(key, 0) + r["qty"]
     return by_key
 

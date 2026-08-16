@@ -31,7 +31,7 @@
   <table>
     <tr>
       <th>File</th><th>Customer</th><th>Uploaded</th><th>GRNs</th>
-      <th>Verified</th><th>Quarantined</th><th></th>
+      <th>Verified</th><th>Quarantined</th><th>Posted</th><th></th>
     </tr>
     {% for b in batches %}
     <tr>
@@ -41,6 +41,7 @@
       <td>{{ b.summary.grns }}</td>
       <td>{{ b.summary.verified }}</td>
       <td>{{ b.summary.quarantined }}</td>
+      <td>{{ b.summary.posted }}</td>
       <td><a href="{{ url_for('grn_import_review', batch_id=b.batch_id) }}">Review</a></td>
     </tr>
     {% endfor %}

@@ -55,7 +55,16 @@ CREATE TABLE users (
 CREATE TABLE inventory_movements (
     id               SERIAL PRIMARY KEY,
     movement_date    TEXT NOT NULL,
-    sku_code         TEXT REFERENCES products(sku_code),
+    -- No REFERENCES here -- Phase 8 dropped the legacy FK to
+    -- products(sku_code). A canonical movement's sku_code is
+    -- master_products.barcode (derived, never trusted from the caller --
+    -- see ingest.py's record_movement()), which would never exist as a
+    -- legacy products row; a legacy/manual movement's sku_code stays the
+    -- old free-text SKU. product_id (below) is the TRUE internal
+    -- inventory identity for a canonical movement -- reconcile.py's
+    -- stock_by_location()/current_balance_by_product() group by it
+    -- directly, never by this compatibility string.
+    sku_code         TEXT,
     movement_type    TEXT NOT NULL,  -- 'production' | 'opening_balance' | 'transfer' | 'sale' | 'loss'
     quantity         REAL NOT NULL,  -- always positive; direction comes from movement_type
     location_from_id INTEGER REFERENCES locations(id),  -- null for production/opening_balance
@@ -64,6 +73,16 @@ CREATE TABLE inventory_movements (
     reference_type   TEXT,   -- 'po' | 'grn' | 'discrepancy_note' | 'debit_note' | 'manual'
     reference_id     TEXT,   -- the relevant document number, or null for manual entries
     notes            TEXT,
+    -- Phase 8: canonical product identity. NULL for every legacy/manual
+    -- movement. No inline REFERENCES -- master_products is defined later
+    -- in this file; the FK is added below once it exists.
+    product_id       INTEGER,
+    -- Exactly one SALE movement per official GRN line (received_qty > 0)
+    -- -- UNIQUE so a bug can't double-create one; plain UNIQUE allows
+    -- unlimited NULLs, which every legacy/manual movement leaves it as.
+    -- No inline REFERENCES -- grn_line_items is defined later in this
+    -- file; the FK is added there once it exists.
+    source_grn_line_item_id INTEGER UNIQUE,
     -- set only when a human explicitly chose "Continue Anyway" on the
     -- negative-inventory warning for a manual transfer/sale/loss -- see
     -- app.py's new_movement() and reconcile.py's negative_balances().
@@ -219,9 +238,20 @@ CREATE INDEX idx_appointments_po_number ON appointments(po_number);
 -- Receiving a GRN automatically creates a 'sale' row in
 -- inventory_movements (see ingest.py); nothing here blocks a GRN from
 -- existing without a matching PO row -- po_number is optional.
+-- Phase 8: grn_id is the real internal PK (mirrors purchase_orders.po_id
+-- from Phase 2) -- grn_number kept as unique compatibility scaffolding
+-- for grn_line_items/discrepancy_notes, which still reference it
+-- directly. UNIQUE(customer_id, grn_number) is the future business-
+-- identity rule, temporarily redundant with the table-wide UNIQUE below
+-- until those child tables migrate to grn_id.
 CREATE TABLE grn_receipts (
-    grn_number     TEXT PRIMARY KEY,
+    grn_id         BIGSERIAL PRIMARY KEY,
+    grn_number     TEXT NOT NULL UNIQUE,
     po_number      TEXT REFERENCES purchase_orders(po_number),
+    -- Phase 8: the official PO this GRN was matched against at Phase 6/7
+    -- verification time -- copied exactly from staged_grns.official_po_id
+    -- when posted, never independently re-resolved. See grn_posting.py.
+    po_id          BIGINT REFERENCES purchase_orders(po_id),
     customer_id    INTEGER REFERENCES customers(id),
     inbound_no     TEXT,
     grn_date       TEXT,
@@ -232,14 +262,19 @@ CREATE TABLE grn_receipts (
     challan_date   TEXT,
     vendor_name    TEXT,
     facility_name  TEXT,
-    source         TEXT,  -- always 'pdf' -- GRNs arrive as individual PDFs
+    supplier_code  TEXT,
+    dn_number      TEXT,
+    source         TEXT,  -- 'pdf' (legacy) | 'csv' (Phase 8 canonical)
     source_file    TEXT,
     -- Fallback/override for which Drizzl location this GRN's sale
     -- movement(s) should come from. Only consulted if this GRN has no
     -- po_number, or its PO exists but has no source_location_id of its
     -- own -- when a PO source is set, that takes precedence (see
     -- ingest.py's _resolve_grn_source_location()). Never guessed/
-    -- defaulted; assigned via assign_grn_source_location().
+    -- defaulted; assigned via assign_grn_source_location(). For a
+    -- canonical GRN this mirrors the matched official PO's
+    -- source_location_id at posting time -- the actual sale movement's
+    -- location is always read fresh from the PO, never from here.
     source_location_id INTEGER REFERENCES locations(id),
     -- Void, not delete -- see inventory_movements.voided above. Voiding a
     -- GRN also voids the sale movement(s) it created (ingest.py's
@@ -247,20 +282,25 @@ CREATE TABLE grn_receipts (
     voided         INTEGER NOT NULL DEFAULT 0,
     void_reason    TEXT,
     voided_at      TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text,
+    CONSTRAINT grn_receipts_customer_grn_number_key UNIQUE (customer_id, grn_number)
 );
 CREATE INDEX idx_grn_receipts_po_number ON grn_receipts(po_number);
+CREATE INDEX idx_grn_receipts_po_id ON grn_receipts(po_id);
 
 CREATE TABLE grn_line_items (
     id                SERIAL PRIMARY KEY,
     grn_number        TEXT NOT NULL REFERENCES grn_receipts(grn_number),
-    sku_code          TEXT REFERENCES products(sku_code),
+    sku_code          TEXT,
     sku_desc          TEXT,
     lot_no            TEXT,
     lot_mrp           REAL,
     lot_expiry_date   TEXT,
     -- expected_qty = what the delivery challan/PDF said should arrive on
-    -- this line ("Exp Qty" on the GRN PDF).
+    -- this line ("Exp Qty" on the GRN PDF). Always NULL for a canonical
+    -- (Phase 8) line -- the CSV workflow has no line-level expected qty,
+    -- and the PO/GRN comparison is the authoritative ordered-vs-received
+    -- computation instead (see grn_csv_staging.get_grn_po_comparison()).
     expected_qty      REAL,
     -- received_qty = what was actually counted in at the warehouse. This
     -- is always the true "sold" quantity -- see ingest.py's upsert_grn.
@@ -276,9 +316,31 @@ CREATE TABLE grn_line_items (
     cess_rate         REAL,
     cess_amt          REAL,
     add_cess          REAL,
-    total             REAL
+    total             REAL,
+    -- Phase 8: canonical product identity alongside legacy/document
+    -- identity -- exactly the same distinction as po_line_items.
+    -- product_id is NULL for every legacy PDF-sourced line; a canonical
+    -- (Phase 8 CSV) line always has it set. sku_code/sku_desc mirror
+    -- external_sku/external_sku_description on a canonical line
+    -- specifically so the existing sku_code-keyed commitment/discrepancy
+    -- code (reconcile.py's committed_quantity(), grn_discrepancies())
+    -- keeps matching without modification. No inline REFERENCES on
+    -- product_id here -- master_products is defined later in this file;
+    -- the FK is added below once it exists.
+    product_id                INTEGER,
+    external_sku              TEXT,
+    external_sku_description  TEXT,
+    -- Preserved source rejection facts -- never the source of truth for
+    -- the PO-vs-GRN commitment discrepancy (that's ordered - received,
+    -- computed fresh; see PROJECT_HANDOFF.md).
+    source_dn_quantity        NUMERIC,
+    source_dn_value           NUMERIC
 );
 CREATE INDEX idx_grn_line_items_grn_number ON grn_line_items(grn_number);
+
+-- Deferred FK -- inventory_movements.source_grn_line_item_id (Phase 8) is
+-- declared earlier in this file, before grn_line_items exists yet.
+ALTER TABLE inventory_movements ADD CONSTRAINT inventory_movements_source_grn_line_item_id_fkey FOREIGN KEY (source_grn_line_item_id) REFERENCES grn_line_items(id);
 
 -- Discrepancy Note: itemized detail of what went wrong with a GRN line
 -- (reason + who's at fault), issued alongside/after a GRN. Purely
@@ -401,7 +463,12 @@ CREATE TABLE inventory_flags (
     resulting_balance REAL,
     reason            TEXT,           -- the human's override reason (source='manual_override' only)
     resolved          INTEGER NOT NULL DEFAULT 0,
-    created_at        TEXT DEFAULT CURRENT_TIMESTAMP::text
+    created_at        TEXT DEFAULT CURRENT_TIMESTAMP::text,
+    -- Phase 8: lets a future operator see which canonical Master Product
+    -- went negative without joining back through movement_id (which is
+    -- deliberately unFK'd, see above). NULL for a legacy/manual flag. No
+    -- inline REFERENCES -- master_products is defined later in this file.
+    product_id        INTEGER
 );
 CREATE INDEX idx_inventory_flags_unresolved ON inventory_flags(resolved);
 
@@ -451,6 +518,14 @@ CREATE TABLE master_products (
 -- Deferred FK -- po_line_items.product_id (Phase 5) is declared earlier in
 -- this file, before master_products exists yet.
 ALTER TABLE po_line_items ADD CONSTRAINT po_line_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES master_products(product_id);
+
+-- Deferred FKs -- Phase 8's product_id columns are all declared earlier in
+-- this file, before master_products exists yet.
+ALTER TABLE inventory_movements ADD CONSTRAINT inventory_movements_product_id_fkey FOREIGN KEY (product_id) REFERENCES master_products(product_id);
+ALTER TABLE grn_line_items ADD CONSTRAINT grn_line_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES master_products(product_id);
+ALTER TABLE inventory_flags ADD CONSTRAINT inventory_flags_product_id_fkey FOREIGN KEY (product_id) REFERENCES master_products(product_id);
+CREATE INDEX idx_inventory_movements_product_id ON inventory_movements(product_id);
+CREATE INDEX idx_grn_line_items_product_id ON grn_line_items(product_id);
 
 -- Bridges a customer's own SKU code to Drizzl's master product. Not
 -- assumed globally unique -- two different customers may reuse the same
@@ -688,6 +763,14 @@ CREATE TABLE staged_grns (
     po_verification_status         TEXT NOT NULL DEFAULT 'pending',
     po_verification_errors          JSONB NOT NULL DEFAULT '[]'::jsonb,
 
+    -- Phase 8: durable link to the official GRN this staged record was
+    -- posted into, and when. NULL means never posted. UNIQUE so a staged
+    -- record can only ever point at one official GRN. Once set, this
+    -- staged record becomes an immutable audit snapshot -- revalidation
+    -- skips it (see grn_csv_staging.py).
+    posted_grn_id                     BIGINT UNIQUE REFERENCES grn_receipts(grn_id),
+    posted_at                          TIMESTAMPTZ,
+
     created_at                       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (batch_id, customer_id, external_grn_number)
 );
@@ -697,6 +780,7 @@ CREATE INDEX idx_staged_grns_customer_external_po ON staged_grns(customer_id, ex
 CREATE INDEX idx_staged_grns_official_po_id ON staged_grns(official_po_id);
 CREATE INDEX idx_staged_grns_validation_status ON staged_grns(validation_status);
 CREATE INDEX idx_staged_grns_po_verification_status ON staged_grns(po_verification_status);
+CREATE INDEX idx_staged_grns_posted_grn_id ON staged_grns(posted_grn_id);
 
 -- One row per normalized PHYSICAL receipt/lot line -- NOT necessarily one
 -- raw CSV row (see staged_grn_line_source_rows and grn_csv_staging.py's
@@ -747,6 +831,10 @@ CREATE TABLE staged_grn_lines (
 
     validation_status           TEXT NOT NULL DEFAULT 'valid',
     validation_errors           JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+    -- Phase 8: durable link to the official grn_line_items row this
+    -- staged line was posted into. NULL means never posted.
+    posted_grn_line_item_id     INTEGER UNIQUE REFERENCES grn_line_items(id),
 
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

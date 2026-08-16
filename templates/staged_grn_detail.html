@@ -6,13 +6,44 @@
   <h1 style="margin-bottom:4px;">Staged GRN {{ grn.external_grn_number }}</h1>
   <span class="badge badge-{{ grn.review_status }}">{{ grn.review_status|upper }}</span>
 </div>
-<p class="subtitle">From batch {{ batch.batch_id }} ({{ batch.source_filename }}) &middot; a VERIFIED badge means this GRN passed validation and PO verification -- it is still staged and has NOT reduced inventory, created a sale, or released any PO commitment.</p>
+<p class="subtitle">
+  From batch {{ batch.batch_id }} ({{ batch.source_filename }})
+  {% if grn.review_status == "posted" %}
+  &middot; posted to the official ledger.
+  {% else %}
+  &middot; a VERIFIED badge means this GRN passed validation and PO verification -- it is still staged and has NOT reduced inventory, created a sale, or released any PO commitment.
+  {% endif %}
+</p>
 
+{% if grn.review_status == "posted" %}
+<div class="panel">
+  <p class="subtitle" style="margin:0;">
+    Posted as official GRN <a href="{{ url_for('lookup', q=grn.external_grn_number) }}"><strong>#{{ grn.posted_grn_id }}</strong></a>
+    at {{ grn.posted_at }}. This created official receipt records, reduced inventory by the normalized
+    received quantities, and closed official PO {{ grn.external_po_number }}'s commitment in full. This
+    staged record is now a locked audit snapshot -- it is no longer revalidated.
+  </p>
+</div>
+{% else %}
 <div class="panel">
   <form method="post" action="{{ url_for('revalidate_single_grn_route', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}" onsubmit="return confirm('Recompute PO verification for this GRN using its existing staged data? This does not reparse the file or affect inventory.');">
     <button type="submit">Revalidate GRN</button>
   </form>
 </div>
+{% if grn.review_status == "verified" %}
+<div class="panel">
+  <p class="subtitle" style="margin:0 0 10px;">
+    This GRN is VERIFIED. Posting creates an official receipt record, reduces inventory by the normalized
+    received quantities, and closes official PO {{ grn.external_po_number }}'s commitment in full --
+    including any product on that PO completely absent from this GRN.
+  </p>
+  <form method="post" action="{{ url_for('post_staged_grns_route', batch_id=batch.batch_id) }}" onsubmit="return confirm('Post GRN {{ grn.external_grn_number }} to the official ledger? This creates an official receipt record, reduces inventory, and closes the related PO commitment.');">
+    <input type="hidden" name="staged_grn_ids" value="{{ grn.staged_grn_id }}">
+    <button type="submit">Post This GRN</button>
+  </form>
+</div>
+{% endif %}
+{% endif %}
 
 <div class="panel">
   <h2 style="margin-top:0;">GRN details</h2>
@@ -196,6 +227,28 @@
   </div>
   {% endif %}
 </div>
+
+{% if grn.review_status == "posted" %}
+<div class="panel">
+  <h2 style="margin-top:0;">Inventory effect</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Read-only. One SALE movement per normalized receipt line -- a multi-lot product shows multiple lines here, each tied to its own official GRN line.</p>
+  {% if inventory_effect %}
+  <table>
+    <tr><th>Master Product</th><th>Master Barcode</th><th>Quantity</th><th>From Location</th></tr>
+    {% for m in inventory_effect %}
+    <tr>
+      <td>{{ m.product_name or "" }}</td>
+      <td>{{ m.barcode or "" }}</td>
+      <td>-{{ "%.0f"|format(m.quantity) }}</td>
+      <td>{{ m.from_location or "" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No inventory movements (every normalized line had a zero received quantity).</p>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="panel">
   <details class="details-toggle">
