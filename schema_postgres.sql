@@ -95,9 +95,22 @@ CREATE INDEX idx_movements_date ON inventory_movements(movement_date);
 -- True today (only Scootsy). Revisit with a composite (customer_id,
 -- po_number) key if/when a second customer's numbering scheme is known
 -- to collide with Scootsy's.
+-- Phase 2 (2026-08-15): po_id is the real internal identity now, not
+-- po_number. po_number stays NOT NULL + UNIQUE as temporary backwards-
+-- compatible scaffolding -- po_line_items/appointments/grn_receipts/
+-- discrepancy_notes/debit_notes all still reference po_number, not po_id,
+-- until a later phase migrates them (a Postgres FK can target a UNIQUE
+-- column just as well as a PRIMARY KEY, which is what makes this work
+-- without changing any child table below). UNIQUE(customer_id, po_number)
+-- is the future business-identity rule, temporarily redundant with the
+-- table-wide UNIQUE(po_number) until child tables migrate off po_number
+-- and that global uniqueness can be relaxed to allow cross-customer PO
+-- number collisions. See PROJECT_HANDOFF.md and
+-- migrations/002_po_identity_foundation.sql.
 CREATE TABLE purchase_orders (
-    po_number               TEXT PRIMARY KEY,
-    customer_id              INTEGER REFERENCES customers(id),
+    po_id                    BIGSERIAL PRIMARY KEY,
+    po_number                TEXT NOT NULL UNIQUE,
+    customer_id              INTEGER NOT NULL REFERENCES customers(id),
     po_date                  TEXT,
     po_release_date          TEXT,
     payment_terms            TEXT,
@@ -122,7 +135,8 @@ CREATE TABLE purchase_orders (
     voided                         INTEGER NOT NULL DEFAULT 0,
     void_reason                    TEXT,
     voided_at                      TEXT,
-    created_at                     TEXT DEFAULT CURRENT_TIMESTAMP::text
+    created_at                     TEXT DEFAULT CURRENT_TIMESTAMP::text,
+    CONSTRAINT purchase_orders_customer_po_number_key UNIQUE (customer_id, po_number)
 );
 
 CREATE TABLE po_line_items (
