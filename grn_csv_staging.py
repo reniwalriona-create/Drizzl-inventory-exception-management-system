@@ -839,8 +839,17 @@ def validate_staged_grn(conn, staged_grn_id):
                             f"(SKU {row['external_sku']}) exceeds the ordered {row['ordered_qty']}.",
                         ))
 
+    # AND voided = 0 (Phase 11) -- matches grn_posting.py's own
+    # official-GRN conflict check (relaxed in Phase 10 for the same
+    # reason): a grn_number whose only history is an already-voided/
+    # superseded row is free to be posted normally again. Without this
+    # filter, a staged GRN could get permanently stuck BLOCKED with no
+    # resolution path -- find_correction_target() only ever offers the
+    # Correct/Replace action against a currently ACTIVE conflicting GRN
+    # (see grn_posting.py), so a conflict against a merely-voided (never
+    # superseded) row would have no active target to correct against.
     existing_official_grn = conn.execute(
-        "SELECT 1 FROM grn_receipts WHERE grn_number = ?", (staged_grn["external_grn_number"],)
+        "SELECT 1 FROM grn_receipts WHERE grn_number = ? AND voided = 0", (staged_grn["external_grn_number"],)
     ).fetchone()
     if existing_official_grn is not None:
         errors.append(_err(

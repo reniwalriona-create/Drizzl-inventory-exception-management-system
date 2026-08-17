@@ -358,11 +358,21 @@ def damaged_units_by_sku(conn, sku_code=None, location=None):
     """The running damage counter -- per your own framing, if this
     climbs over time that's a real problem to chase, even if any single
     write-off looks small. `location` filters to where the damaged stock
-    left from (loss movements always have a From location)."""
+    left from (loss movements always have a From location).
+
+    Phase 11: description join mirrors stock_by_location()'s dual-
+    identity pattern -- legacy products.sku_code is only ever joined for
+    product_id IS NULL rows (no canonical 'loss' movement exists today,
+    since the manual-movement form only takes a free-text sku_code, but
+    this closes the join off from ever matching a canonical row's
+    derived sku_code -- which is a Master Product barcode, a different
+    string space -- by coincidence)."""
     query = """
-        SELECT m.sku_code, MAX(p.sku_desc) AS sku_desc, SUM(m.quantity) AS total_damaged, COUNT(*) AS n_events
+        SELECT m.sku_code, COALESCE(MAX(mp.product_name), MAX(p.sku_desc)) AS sku_desc,
+               SUM(m.quantity) AS total_damaged, COUNT(*) AS n_events
         FROM inventory_movements m
-        LEFT JOIN products p ON p.sku_code = m.sku_code
+        LEFT JOIN products p ON p.sku_code = m.sku_code AND m.product_id IS NULL
+        LEFT JOIN master_products mp ON mp.product_id = m.product_id
         LEFT JOIN locations lf ON lf.id = m.location_from_id
         WHERE m.movement_type = 'loss' AND m.voided = 0
     """

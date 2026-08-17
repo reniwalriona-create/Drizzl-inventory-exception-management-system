@@ -19,8 +19,7 @@ table, and does not call any function with official ledger effects
 import csv
 import hashlib
 import json
-import re
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 import catalog

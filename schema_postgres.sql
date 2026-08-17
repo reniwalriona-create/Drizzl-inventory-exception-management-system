@@ -68,7 +68,7 @@ CREATE TABLE inventory_movements (
     -- directly, never by this compatibility string.
     sku_code         TEXT,
     movement_type    TEXT NOT NULL,  -- 'production' | 'opening_balance' | 'transfer' | 'sale' | 'loss'
-    quantity         REAL NOT NULL,  -- always positive; direction comes from movement_type
+    quantity         REAL NOT NULL CHECK (quantity >= 0),  -- always positive; direction comes from movement_type
     location_from_id INTEGER REFERENCES locations(id),  -- null for production/opening_balance
     location_to_id   INTEGER REFERENCES locations(id),  -- null for sale/loss
     reason           TEXT,   -- e.g. 'damaged', 'expired', free text for manual entries
@@ -182,7 +182,7 @@ CREATE TABLE po_line_items (
     item_code        TEXT,
     item_desc        TEXT,
     hsn_code         TEXT,
-    qty              REAL,
+    qty              REAL CHECK (qty >= 0),
     mrp              REAL,
     unit_base_cost   REAL,
     taxable_value    REAL,
@@ -228,7 +228,7 @@ CREATE TABLE appointments (
     facility_name  TEXT,
     slot_date      TEXT,
     slot_time      TEXT,
-    booked_qty     REAL,
+    booked_qty     REAL CHECK (booked_qty >= 0),
     state          TEXT,
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
@@ -339,10 +339,10 @@ CREATE TABLE grn_line_items (
     -- (Phase 8) line -- the CSV workflow has no line-level expected qty,
     -- and the PO/GRN comparison is the authoritative ordered-vs-received
     -- computation instead (see grn_csv_staging.get_grn_po_comparison()).
-    expected_qty      REAL,
+    expected_qty      REAL CHECK (expected_qty >= 0),
     -- received_qty = what was actually counted in at the warehouse. This
     -- is always the true "sold" quantity -- see ingest.py's upsert_grn.
-    received_qty      REAL,
+    received_qty      REAL CHECK (received_qty >= 0),
     unit_price        REAL,
     taxable_value     REAL,
     cgst_rate         REAL,
@@ -371,7 +371,7 @@ CREATE TABLE grn_line_items (
     -- Preserved source rejection facts -- never the source of truth for
     -- the PO-vs-GRN commitment discrepancy (that's ordered - received,
     -- computed fresh; see PROJECT_HANDOFF.md).
-    source_dn_quantity        NUMERIC,
+    source_dn_quantity        NUMERIC CHECK (source_dn_quantity >= 0),
     source_dn_value           NUMERIC
 );
 CREATE INDEX idx_grn_line_items_grn_id ON grn_line_items(grn_id);
@@ -444,8 +444,12 @@ CREATE TABLE inventory_flags (
     location_name     TEXT,
     source            TEXT NOT NULL,  -- 'manual_override' | 'grn' | 'commitment_override'
     reference_id      TEXT,           -- grn_number for source='grn', else null
+    -- available_before/resulting_balance are deliberately NOT
+    -- constrained non-negative -- a negative resulting_balance is
+    -- exactly the condition this row exists to flag, never something to
+    -- block at the schema level (Phase 11).
     available_before  REAL,
-    requested_qty     REAL,
+    requested_qty     REAL CHECK (requested_qty >= 0),
     resulting_balance REAL,
     reason            TEXT,           -- the human's override reason (source='manual_override' only)
     resolved          INTEGER NOT NULL DEFAULT 0,
@@ -496,7 +500,7 @@ CREATE TABLE debit_note_items (
     -- the document -- left null when it can't be confidently matched to
     -- a known product rather than guessed from the description text.
     sku_code    TEXT REFERENCES products(sku_code),
-    qty         REAL,
+    qty         REAL CHECK (qty >= 0),
     rate        REAL,
     amount      REAL
 );
@@ -643,7 +647,11 @@ CREATE INDEX idx_staged_pos_batch_id ON staged_purchase_orders(batch_id);
 CREATE INDEX idx_staged_pos_customer_external_po ON staged_purchase_orders(customer_id, external_po_number);
 CREATE INDEX idx_staged_pos_validation_status ON staged_purchase_orders(validation_status);
 CREATE INDEX idx_staged_pos_source_location_id ON staged_purchase_orders(source_location_id);
-CREATE INDEX idx_staged_pos_posted_po_id ON staged_purchase_orders(posted_po_id);
+-- No separate index on posted_po_id -- the column's own UNIQUE modifier
+-- above already creates staged_purchase_orders_posted_po_id_key, a
+-- unique btree index on exactly this column, which already covers
+-- every lookup a plain index would (Phase 11: this used to be a
+-- genuinely redundant duplicate).
 
 -- One row per raw CSV product line -- deliberately no UNIQUE(staged_po_id,
 -- external_sku), since a future export may legitimately repeat a SKU on
@@ -666,9 +674,9 @@ CREATE TABLE staged_po_lines (
 
     category_id                     TEXT,
 
-    ordered_qty                       NUMERIC,
-    received_qty                       NUMERIC,
-    balanced_qty                         NUMERIC,
+    ordered_qty                       NUMERIC CHECK (ordered_qty >= 0),
+    received_qty                       NUMERIC CHECK (received_qty >= 0),
+    balanced_qty                         NUMERIC CHECK (balanced_qty >= 0),
 
     tax                                   NUMERIC,
     line_value_without_tax                  NUMERIC,
@@ -686,7 +694,6 @@ CREATE TABLE staged_po_lines (
 
     created_at                                        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_staged_po_lines_posted_line_item_id ON staged_po_lines(posted_line_item_id);
 CREATE INDEX idx_staged_po_lines_staged_po_id ON staged_po_lines(staged_po_id);
 CREATE INDEX idx_staged_po_lines_product_id ON staged_po_lines(product_id);
 CREATE INDEX idx_staged_po_lines_external_sku ON staged_po_lines(external_sku);
@@ -805,12 +812,12 @@ CREATE TABLE staged_grn_lines (
     -- The quantity that will eventually reduce inventory -- never summed
     -- across raw rows that are really the same physical line represented
     -- twice (see the normalization algorithm).
-    received_qty                NUMERIC,
+    received_qty                NUMERIC CHECK (received_qty >= 0),
 
     -- Source rejection facts, preserved but NOT the source of truth for
     -- the PO-vs-GRN commitment discrepancy (that's ordered_qty -
     -- received_qty, computed fresh in get_grn_po_comparison()).
-    dn_quantity                 NUMERIC,
+    dn_quantity                 NUMERIC CHECK (dn_quantity >= 0),
     dn_value                    NUMERIC,
 
     grn_line_value_without_tax  NUMERIC,
