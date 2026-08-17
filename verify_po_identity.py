@@ -20,7 +20,7 @@ import psycopg2.errors
 import purchase_orders as po_helpers
 from db import get_connection
 
-CHILD_FK_TABLES = ["po_line_items", "appointments", "grn_receipts", "discrepancy_notes", "debit_notes"]
+CHILD_FK_TABLES = ["po_line_items", "appointments", "grn_receipts", "debit_notes"]
 MIGRATION_PATH = Path(__file__).parent / "migrations" / "002_po_identity_foundation.sql"
 
 

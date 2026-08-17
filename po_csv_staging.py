@@ -4,8 +4,8 @@ PO CSV staging (Phase 3).
 Stages a bulk Scootsy-style PO CSV export into po_import_batches /
 po_import_rows / staged_purchase_orders / staged_po_lines. Nothing here
 ever touches the official ledger (purchase_orders, po_line_items,
-inventory_movements, grn_receipts, discrepancy_notes, debit_notes) -- a
-staged PO is not an official PO. Review and posting are later phases.
+inventory_movements, grn_receipts, debit_notes) -- a staged PO is not an
+official PO. Review and posting are later phases.
 
 Transaction ownership: these functions do NOT call conn.commit() or
 conn.rollback() themselves (unlike ingest.py's upsert_* functions) --

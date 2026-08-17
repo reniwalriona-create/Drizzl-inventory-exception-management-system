@@ -1,5 +1,5 @@
 """
-Flask web app: upload page for PO/GRN/Discrepancy/Debit Note documents,
+Flask web app: upload page for PO/GRN/Debit Note documents,
 a dashboard built on reconcile.py's reports, and a manual movement form
 -- the only way to capture undocumented events (flea markets, transfers,
 production) that no document exists for.
@@ -18,21 +18,17 @@ import po_posting
 import reconcile
 from activity_log import log_activity, recent_activity
 from db import get_connection
-from discrepancy_note_parser import parse_discrepancy_note_pdf
 from grn_parser import parse_grn_pdf
 from ingest import (
     assign_grn_source_location,
     assign_po_source_location,
     record_inventory_flag,
     record_movement,
-    unvoid_discrepancy_note,
     unvoid_grn,
     unvoid_movement,
     unvoid_po,
-    upsert_discrepancy_note,
     upsert_grn,
     upsert_po,
-    void_discrepancy_note,
     void_grn,
     void_movement,
     void_po,
@@ -40,10 +36,13 @@ from ingest import (
 from po_parser import parse_po_pdf
 
 # Debit Notes and Appointment slots are deliberately NOT wired into the web
-# app for now (MVP is PO -> GRN -> discrepancy -> Discrepancy Note only).
-# The parser/ingest functions for both still exist and work from the
-# command line (`python3 ingest.py debit-note|appointments-csv <file>`) if
-# needed later.
+# app for now (MVP is PO -> GRN -> canonical PO-vs-GRN discrepancy
+# reporting; see reconcile.py's official_discrepancies()). The parser/
+# ingest functions for both still exist and work from the command line
+# (`python3 ingest.py debit-note|appointments-csv <file>`) if needed
+# later. The old Discrepancy Note PDF workflow (upload/parse/void) was
+# removed entirely in Phase 9 -- discrepancy is now computed, never
+# uploaded as a separate document.
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -56,7 +55,6 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-only-secret-change-before-dep
 DOC_TYPES = {
     "po": ("Purchase Order (PDF)", ".pdf"),
     "grn": ("GRN (PDF)", ".pdf"),
-    "discrepancy-note": ("Discrepancy Note (PDF)", ".pdf"),
 }
 
 MOVEMENT_TYPES = ["production", "opening_balance", "transfer", "sale", "loss"]
@@ -138,7 +136,7 @@ def dashboard():
             damaged_by_sku=reconcile.damaged_units_by_sku(conn, sku_code=sku_code, location=location),
             damaged_by_cause=reconcile.damaged_units_by_cause(conn, sku_code=sku_code, location=location),
             shortfall=reconcile.po_vs_received_shortfall(conn, sku_code=sku_code),
-            grn_discrepancies=reconcile.grn_discrepancies(conn, sku_code=sku_code),
+            official_discrepancies=reconcile.official_discrepancies(conn, sku_code=sku_code),
             flags=reconcile.unresolved_flags(conn),
             negative_balances=negatives,
             inventory_flags=reconcile.unresolved_inventory_flags(conn),
@@ -211,10 +209,6 @@ def upload():
                 result = upsert_grn(conn, parse_grn_pdf(str(dest)), source_file=filename)
                 msg = f"Stored GRN {result}."
                 log_activity(conn, "grn_upload", f"Uploaded GRN {result} ({filename})", "grn", result)
-            elif doc_type == "discrepancy-note":
-                result = upsert_discrepancy_note(conn, parse_discrepancy_note_pdf(str(dest)), source_file=filename)
-                msg = f"Stored Discrepancy Note {result}."
-                log_activity(conn, "discrepancy_note_upload", f"Uploaded Discrepancy Note {result} ({filename})", "discrepancy_note", result)
 
             conn.commit()
             flash(msg, "success")
@@ -610,38 +604,6 @@ def restore_grn_route(grn_number):
     finally:
         conn.close()
     return redirect(url_for("lookup", q=grn_number))
-
-
-@app.route("/discrepancy-note/<dn_number>/void", methods=["POST"])
-def void_discrepancy_note_route(dn_number):
-    conn = get_connection()
-    try:
-        reason = (request.form.get("reason") or "").strip()
-        if not reason:
-            raise ValueError("Voiding needs a reason.")
-        void_discrepancy_note(conn, dn_number, reason)
-        log_activity(conn, "discrepancy_note_voided", f"Voided Discrepancy Note {dn_number}: {reason}", "discrepancy_note", dn_number)
-        conn.commit()
-        flash(f"Discrepancy Note {dn_number} voided.", "warning")
-    except ValueError as e:
-        conn.rollback()
-        flash(str(e), "error")
-    finally:
-        conn.close()
-    return redirect(url_for("lookup", q=dn_number))
-
-
-@app.route("/discrepancy-note/<dn_number>/restore", methods=["POST"])
-def restore_discrepancy_note_route(dn_number):
-    conn = get_connection()
-    try:
-        unvoid_discrepancy_note(conn, dn_number)
-        log_activity(conn, "discrepancy_note_restored", f"Restored Discrepancy Note {dn_number}", "discrepancy_note", dn_number)
-        conn.commit()
-        flash(f"Discrepancy Note {dn_number} restored.", "success")
-    finally:
-        conn.close()
-    return redirect(url_for("lookup", q=dn_number))
 
 
 @app.route("/movements/<int:movement_id>/void", methods=["POST"])

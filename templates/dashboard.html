@@ -63,7 +63,7 @@
 
 <div class="panel">
   <h2 style="margin-top:0;">Voided entries <span class="badge">{{ voided_entries|length }}</span></h2>
-  <p class="subtitle" style="margin:0 0 10px;">Every PO/GRN/Discrepancy Note/manual movement that's been voided, with its reason -- this is the review trail for catching a void that was itself a mistake. Nothing here is ever deleted; Restore reverses it exactly.</p>
+  <p class="subtitle" style="margin:0 0 10px;">Every PO/GRN/manual movement that's been voided, with its reason -- this is the review trail for catching a void that was itself a mistake. Nothing here is ever deleted; Restore reverses it exactly.</p>
   {% if voided_entries %}
   <table>
     <tr><th>Type</th><th>Entry</th><th>Reason</th><th>Voided</th><th></th></tr>
@@ -80,10 +80,6 @@
         </form>
         {% elif v.type == "grn" %}
         <form method="post" action="{{ url_for('restore_grn_route', grn_number=v.id) }}" style="margin:0;">
-          <button type="submit" class="link">Restore</button>
-        </form>
-        {% elif v.type == "discrepancy_note" %}
-        <form method="post" action="{{ url_for('restore_discrepancy_note_route', dn_number=v.id) }}" style="margin:0;">
           <button type="submit" class="link">Restore</button>
         </form>
         {% elif v.type == "movement" %}
@@ -265,8 +261,8 @@
 </div>
 
 <div class="panel">
-  <h2 style="margin-top:0;">Ordered vs received shortfall{% if selected_sku %} -- SKU {{ selected_sku }}{% endif %}</h2>
-  <p class="subtitle" style="margin:0 0 10px;">Per PO line, across parsed POs only. Respects the SKU filter above (not location -- a PO isn't tied to a Drizzl warehouse).</p>
+  <h2 style="margin-top:0;">Ordered vs received shortfall (legacy PDF POs){% if selected_sku %} -- SKU {{ selected_sku }}{% endif %}</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Per PO line, legacy PDF-sourced POs only -- canonical CSV-posted POs are covered by "Official PO-vs-GRN discrepancies" below instead, never both. Respects the SKU filter above (not location -- a PO isn't tied to a Drizzl warehouse).</p>
   {% if shortfall %}
   <table>
     <tr><th>PO</th><th>SKU</th><th>Description</th><th>Ordered</th><th>Received</th><th>Shortfall</th></tr>
@@ -287,30 +283,27 @@
 </div>
 
 <div class="panel">
-  <h2 style="margin-top:0;">GRN discrepancies (expected vs received){% if selected_sku %} -- SKU {{ selected_sku }}{% endif %}</h2>
-  <p class="subtitle" style="margin:0 0 10px;">A discrepancy here does NOT automatically create a loss -- it's unresolved until a Discrepancy Note explains it.</p>
-  {% if grn_discrepancies %}
+  <h2 style="margin-top:0;">Official PO-vs-GRN discrepancies{% if selected_sku %} -- SKU {{ selected_sku }}{% endif %}</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Computed fresh from official posted PO/GRN records (product_id + external_sku identity), for canonical POs with at least one official GRN posted against them. Computed Shortfall is ordered &minus; received, always distinct from Source DN Qty (the CSV's own rejection figure, an audit fact only). No automatic loss is created here.</p>
+  {% if official_discrepancies %}
   <table>
-    <tr><th>PO</th><th>GRN</th><th>SKU</th><th>Description</th><th>Expected</th><th>Received</th><th>Difference</th><th>Discrepancy Note</th></tr>
-    {% for r in grn_discrepancies %}
+    <tr><th>PO</th><th>Customer SKU</th><th>Master Product</th><th>Master Barcode</th><th>Ordered</th><th>Received</th><th>Computed Shortfall</th><th>Source DN Qty</th><th>Status</th></tr>
+    {% for r in official_discrepancies %}
     <tr>
-      <td>{{ r.po_number or "" }}</td>
-      <td>{{ r.grn_number }}</td>
-      <td>{{ r.sku_code }}</td>
-      <td>{{ r.sku_desc or "" }}</td>
-      <td>{{ "%.0f"|format(r.expected_qty) }}</td>
+      <td>{{ r.po_number }}</td>
+      <td>{{ r.external_sku }}</td>
+      <td>{{ r.product_name or "" }}</td>
+      <td>{{ r.barcode or "" }}</td>
+      <td>{{ "%.0f"|format(r.ordered_qty) }}</td>
       <td>{{ "%.0f"|format(r.received_qty) }}</td>
-      <td class="neg">{{ "%+.0f"|format(r.discrepancy_qty) }}{% if r.discrepancy_qty < 0 %} (received more than expected){% endif %}</td>
-      {% if r.dn_number %}
-      <td>{{ r.dn_number }} -- {{ r.reason }}{% if r.remarks %} ({{ r.remarks }}){% endif %}</td>
-      {% else %}
-      <td class="neg">Missing / Awaiting Upload</td>
-      {% endif %}
+      <td class="{{ 'neg' if r.computed_shortfall_qty > 0 }}">{{ "%+.0f"|format(r.computed_shortfall_qty) }}</td>
+      <td>{{ "%.0f"|format(r.source_dn_quantity) if r.source_dn_quantity is not none else "" }}</td>
+      <td>{% if r.status == "SHORT" %}<span class="badge" style="background: var(--warn-bg); color: var(--warn);">SHORT</span>{% else %}<span class="badge">COMPLETE</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
   {% else %}
-  <p class="empty">{{ "No discrepancies for this SKU." if selected_sku else "No discrepancies -- every GRN with a known expected quantity received exactly that much." }}</p>
+  <p class="empty">{{ "No discrepancies for this SKU." if selected_sku else "No discrepancies -- every canonical PO with an official GRN posted has received exactly what was ordered (or no canonical PO has an official GRN yet)." }}</p>
   {% endif %}
 </div>
 

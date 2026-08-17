@@ -202,7 +202,6 @@ def run():
         pDEMO-SKU-004 = product_id_for_sku(conn, "DEMO-SKU-004")
 
         baseline_grn_receipts = table_count(conn, "grn_receipts")
-        baseline_dn = table_count(conn, "discrepancy_notes")
         baseline_debit = table_count(conn, "debit_notes")
 
         # -----------------------------------------------------------------
@@ -523,7 +522,6 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Ledger isolation: zero PR/DN side effects ---")
-        ok &= check("discrepancy_notes untouched by Phase 8 activity", table_count(conn, "discrepancy_notes") == baseline_dn)
         ok &= check("debit_notes untouched by Phase 8 activity", table_count(conn, "debit_notes") == baseline_debit)
 
     finally:

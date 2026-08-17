@@ -2,7 +2,7 @@
 {% block title %}Upload - Drizzl Inventory{% endblock %}
 {% block content %}
 <h1>Upload a document</h1>
-<p class="subtitle">POs, GRNs, and Discrepancy Notes are parsed automatically and added to the ledger. Anything that doesn't add up gets flagged for review on the dashboard, not silently dropped or silently trusted.</p>
+<p class="subtitle">POs and GRNs are parsed automatically and added to the ledger. Anything that doesn't add up gets flagged for review on the dashboard, not silently dropped or silently trusted. PO-vs-GRN discrepancy is computed automatically once both are posted -- there's no separate discrepancy document to upload.</p>
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">

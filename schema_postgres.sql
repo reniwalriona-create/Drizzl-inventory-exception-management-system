@@ -4,9 +4,11 @@
 -- much stock exists and where. Every real event -- a GRN receipt, a
 -- damaged-goods write-off, a flea-market withdrawal, an inter-city
 -- transfer -- becomes one row there, whether or not a PO/GRN/invoice
--- exists behind it. PO/GRN/discrepancy/debit-note tables still capture
--- the formal paperwork when it exists, and feed the ledger automatically;
--- they are no longer required for stock to move.
+-- exists behind it. PO/GRN/debit-note tables still capture the formal
+-- paperwork when it exists, and feed the ledger automatically; they are
+-- no longer required for stock to move. PO-vs-GRN discrepancy is
+-- computed fresh from official posted records, never uploaded as its
+-- own document (see reconcile.py's official_discrepancies(), Phase 9).
 
 -- Businesses that send Drizzl POs and buy from them (Scootsy today, more
 -- retail partners expected). Note: in the PO/GRN PDFs themselves, "Vendor
@@ -70,7 +72,7 @@ CREATE TABLE inventory_movements (
     location_from_id INTEGER REFERENCES locations(id),  -- null for production/opening_balance
     location_to_id   INTEGER REFERENCES locations(id),  -- null for sale/loss
     reason           TEXT,   -- e.g. 'damaged', 'expired', free text for manual entries
-    reference_type   TEXT,   -- 'po' | 'grn' | 'discrepancy_note' | 'debit_note' | 'manual'
+    reference_type   TEXT,   -- 'po' | 'grn' | 'debit_note' | 'manual'
     reference_id     TEXT,   -- the relevant document number, or null for manual entries
     notes            TEXT,
     -- Phase 8: canonical product identity. NULL for every legacy/manual
@@ -117,8 +119,8 @@ CREATE INDEX idx_movements_date ON inventory_movements(movement_date);
 -- Phase 2 (2026-08-15): po_id is the real internal identity now, not
 -- po_number. po_number stays NOT NULL + UNIQUE as temporary backwards-
 -- compatible scaffolding -- po_line_items/appointments/grn_receipts/
--- discrepancy_notes/debit_notes all still reference po_number, not po_id,
--- until a later phase migrates them (a Postgres FK can target a UNIQUE
+-- debit_notes all still reference po_number, not po_id, until a later
+-- phase migrates them (a Postgres FK can target a UNIQUE
 -- column just as well as a PRIMARY KEY, which is what makes this work
 -- without changing any child table below). UNIQUE(customer_id, po_number)
 -- is the future business-identity rule, temporarily redundant with the
@@ -240,8 +242,8 @@ CREATE INDEX idx_appointments_po_number ON appointments(po_number);
 -- existing without a matching PO row -- po_number is optional.
 -- Phase 8: grn_id is the real internal PK (mirrors purchase_orders.po_id
 -- from Phase 2) -- grn_number kept as unique compatibility scaffolding
--- for grn_line_items/discrepancy_notes, which still reference it
--- directly. UNIQUE(customer_id, grn_number) is the future business-
+-- for grn_line_items, which still references it directly.
+-- UNIQUE(customer_id, grn_number) is the future business-
 -- identity rule, temporarily redundant with the table-wide UNIQUE below
 -- until those child tables migrate to grn_id.
 CREATE TABLE grn_receipts (
@@ -322,9 +324,9 @@ CREATE TABLE grn_line_items (
     -- product_id is NULL for every legacy PDF-sourced line; a canonical
     -- (Phase 8 CSV) line always has it set. sku_code/sku_desc mirror
     -- external_sku/external_sku_description on a canonical line
-    -- specifically so the existing sku_code-keyed commitment/discrepancy
-    -- code (reconcile.py's committed_quantity(), grn_discrepancies())
-    -- keeps matching without modification. No inline REFERENCES on
+    -- specifically so the existing sku_code-keyed commitment code
+    -- (reconcile.py's committed_quantity()) keeps matching without
+    -- modification. No inline REFERENCES on
     -- product_id here -- master_products is defined later in this file;
     -- the FK is added below once it exists.
     product_id                INTEGER,
@@ -341,58 +343,6 @@ CREATE INDEX idx_grn_line_items_grn_number ON grn_line_items(grn_number);
 -- Deferred FK -- inventory_movements.source_grn_line_item_id (Phase 8) is
 -- declared earlier in this file, before grn_line_items exists yet.
 ALTER TABLE inventory_movements ADD CONSTRAINT inventory_movements_source_grn_line_item_id_fkey FOREIGN KEY (source_grn_line_item_id) REFERENCES grn_line_items(id);
-
--- Discrepancy Note: itemized detail of what went wrong with a GRN line
--- (reason + who's at fault), issued alongside/after a GRN. Purely
--- informational for now -- it does NOT auto-create a 'loss' row in
--- inventory_movements (see ingest.py's upsert_discrepancy_note and
--- PROJECT_HANDOFF.md section 4 for why).
-CREATE TABLE discrepancy_notes (
-    dn_number      TEXT PRIMARY KEY,
-    dn_date        TEXT,
-    po_number      TEXT REFERENCES purchase_orders(po_number),
-    grn_number     TEXT REFERENCES grn_receipts(grn_number),
-    invoice_number TEXT,
-    inbound_no     TEXT,
-    customer_id    INTEGER REFERENCES customers(id),
-    grn_qty        REAL,
-    grn_amt        REAL,
-    total_dn_qty   REAL,
-    dn_amt         REAL,
-    invoice_amt    REAL,
-    source_file    TEXT,
-    -- Void, not delete -- see inventory_movements.voided above.
-    voided         INTEGER NOT NULL DEFAULT 0,
-    void_reason    TEXT,
-    voided_at      TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
-);
-
-CREATE TABLE discrepancy_note_items (
-    id            SERIAL PRIMARY KEY,
-    dn_number     TEXT NOT NULL REFERENCES discrepancy_notes(dn_number),
-    sno           TEXT,
-    sku_code      TEXT REFERENCES products(sku_code),
-    hsn_code      TEXT,
-    sku_desc      TEXT,
-    reason        TEXT,   -- e.g. 'Damaged'
-    remarks       TEXT,   -- e.g. 'DP WORLD-DAMAGE' -- who's at fault
-    exp_qty       REAL,   -- expected per the PO
-    dn_qty        REAL,   -- quantity flagged in this discrepancy
-    lot_mrp       REAL,
-    unit_price    REAL,
-    taxable_value REAL,
-    cgst_rate     REAL,
-    cgst_amt      REAL,
-    sgst_rate     REAL,
-    sgst_amt      REAL,
-    igst_rate     REAL,
-    igst_amt      REAL,
-    cess_rate     REAL,
-    cess_amt      REAL,
-    total         REAL
-);
-CREATE INDEX idx_discrepancy_note_items_dn_number ON discrepancy_note_items(dn_number);
 
 -- CPD Debit Note: the financial side of a discrepancy -- how much is
 -- being deducted from Drizzl's payout, referencing the same GRN/PO.
@@ -417,7 +367,7 @@ CREATE TABLE debit_notes (
 -- of silently trusted or silently dropped, so a human can go check it.
 CREATE TABLE ingestion_flags (
     id             SERIAL PRIMARY KEY,
-    document_type  TEXT NOT NULL,  -- 'po' | 'grn' | 'discrepancy_note' | 'debit_note'
+    document_type  TEXT NOT NULL,  -- 'po' | 'grn' | 'debit_note'
     document_id    TEXT NOT NULL,  -- the relevant document number
     issue          TEXT NOT NULL,
     source_file    TEXT,
@@ -478,9 +428,9 @@ CREATE INDEX idx_inventory_flags_unresolved ON inventory_flags(resolved);
 -- separate document/movement tables.
 CREATE TABLE activity_log (
     id             SERIAL PRIMARY KEY,
-    action_type    TEXT NOT NULL,  -- 'po_upload' | 'grn_upload' | 'discrepancy_note_upload' | 'movement' | 'flag_resolved'
+    action_type    TEXT NOT NULL,  -- 'po_upload' | 'grn_upload' | 'movement' | 'flag_resolved'
     description    TEXT NOT NULL,  -- human-readable summary, built at the time of the action
-    reference_type TEXT,           -- 'po' | 'grn' | 'discrepancy_note' | 'movement' | 'ingestion_flag'
+    reference_type TEXT,           -- 'po' | 'grn' | 'movement' | 'ingestion_flag'
     reference_id   TEXT,
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );

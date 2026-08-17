@@ -7,7 +7,6 @@ Usage:
     python3 ingest.py po <po_pdf_path>
     python3 ingest.py grn <grn_pdf_path>
     python3 ingest.py appointments-csv <appointments_csv_path>
-    python3 ingest.py discrepancy-note <discrepancy_note_pdf_path>
     python3 ingest.py debit-note <debit_note_pdf_path>
 """
 import csv
@@ -19,9 +18,8 @@ from db import get_connection
 from reconcile import current_balance, resolve_grn_source_location
 from po_parser import parse_po_pdf
 from grn_parser import parse_grn_pdf
-from discrepancy_note_parser import parse_discrepancy_note_pdf
 from debit_note_parser import parse_debit_note_pdf
-from validate import validate_po, validate_grn, validate_discrepancy_note, validate_debit_note, record_flags
+from validate import validate_po, validate_grn, validate_debit_note, record_flags
 
 # Every document ingested so far is from this one customer. When a
 # second customer's documents show up, pass a real customer_name through
@@ -142,24 +140,10 @@ def void_grn(conn, grn_number, reason):
     )
 
 
-def void_discrepancy_note(conn, dn_number, reason):
-    """A Discrepancy Note is purely informational (see PROJECT_HANDOFF.md
-    section 4) -- it never creates a ledger movement, so voiding it just
-    flags the row itself; reconcile.grn_discrepancies() then treats the
-    GRN line as if no Discrepancy Note had explained it."""
-    row = conn.execute("SELECT dn_number FROM discrepancy_notes WHERE dn_number = ?", (dn_number,)).fetchone()
-    if row is None:
-        raise ValueError("Discrepancy Note not found.")
-    conn.execute(
-        "UPDATE discrepancy_notes SET voided = 1, void_reason = ?, voided_at = CURRENT_TIMESTAMP WHERE dn_number = ?",
-        (reason, dn_number),
-    )
-
-
 def void_movement(conn, movement_id, reason):
     """Only a manually-entered movement (reference_type='manual') can be
-    voided this way. A GRN/PO/Discrepancy-Note-generated movement is
-    kept in sync with its parent document by upsert_grn() etc. -- voiding
+    voided this way. A GRN/PO-generated movement is kept in sync with its
+    parent document by upsert_grn() etc. -- voiding
     it directly here would desync it from that document (the document
     would still claim the movement is "live" while the movement itself
     says otherwise). Void the document instead (void_grn() etc.), which
@@ -208,13 +192,6 @@ def unvoid_grn(conn, grn_number):
         "UPDATE inventory_movements SET voided = 0, void_reason = NULL, voided_at = NULL "
         "WHERE reference_type = 'grn' AND reference_id = ?",
         (grn_number,),
-    )
-
-
-def unvoid_discrepancy_note(conn, dn_number):
-    conn.execute(
-        "UPDATE discrepancy_notes SET voided = 0, void_reason = NULL, voided_at = NULL WHERE dn_number = ?",
-        (dn_number,),
     )
 
 
@@ -559,8 +536,9 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
         )
     # The quantity actually counted in at the warehouse is what's sold --
     # NOT expected_qty. If fewer arrived than expected, that gap is a
-    # discrepancy to investigate (see reconcile.py's grn_discrepancies()),
-    # not an automatic loss -- we don't yet know why the units are missing.
+    # discrepancy to investigate (see reconcile.py's canonical PO-vs-GRN
+    # comparison), not an automatic loss -- we don't yet know why the
+    # units are missing.
     #
     # Sale movements are created in this second pass (after every line item
     # is stored) so the source-location resolution below only has to run
@@ -595,90 +573,8 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
     return grn_number
 
 
-def upsert_discrepancy_note(conn, parsed, source_file=None, customer_name=DEFAULT_CUSTOMER):
-    """Re-uploading a dn_number that was voided automatically un-voids
-    it, same reasoning as upsert_po()."""
-    dn_number = parsed["dn_number"]
-    if not dn_number:
-        raise ValueError("Parsed discrepancy note has no dn_number, refusing to store it")
-    record_flags(conn, "discrepancy_note", dn_number, validate_discrepancy_note(parsed), source_file)
-
-    customer_id = _ensure_customer(conn, customer_name)
-    _ensure_po_stub(conn, parsed.get("po_number"), customer_id)
-    _ensure_grn_stub(conn, parsed.get("grn_number"), customer_id)
-
-    conn.execute(
-        """
-        INSERT INTO discrepancy_notes
-            (dn_number, dn_date, po_number, grn_number, invoice_number,
-             inbound_no, customer_id, grn_qty, grn_amt, total_dn_qty,
-             dn_amt, invoice_amt, source_file)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(dn_number) DO UPDATE SET
-            dn_date=excluded.dn_date,
-            po_number=excluded.po_number,
-            grn_number=excluded.grn_number,
-            invoice_number=excluded.invoice_number,
-            inbound_no=excluded.inbound_no,
-            customer_id=excluded.customer_id,
-            grn_qty=excluded.grn_qty,
-            grn_amt=excluded.grn_amt,
-            total_dn_qty=excluded.total_dn_qty,
-            dn_amt=excluded.dn_amt,
-            invoice_amt=excluded.invoice_amt,
-            source_file=excluded.source_file,
-            voided=0, void_reason=NULL, voided_at=NULL
-        """,
-        (
-            dn_number, parsed.get("dn_date"), parsed.get("po_number"),
-            parsed.get("grn_number"), parsed.get("invoice_number"),
-            parsed.get("inbound_no"), customer_id, parsed.get("grn_qty"),
-            parsed.get("grn_amt"), parsed.get("total_dn_qty"),
-            parsed.get("dn_amt"), parsed.get("invoice_amt"), source_file,
-        ),
-    )
-
-    conn.execute("DELETE FROM discrepancy_note_items WHERE dn_number = ?", (dn_number,))
-
-    for item in parsed.get("line_items", []):
-        sku_code = _ensure_product(conn, item.get("sku_code"), item.get("sku_desc"))
-        conn.execute(
-            """
-            INSERT INTO discrepancy_note_items
-                (dn_number, sno, sku_code, hsn_code, sku_desc, reason,
-                 remarks, exp_qty, dn_qty, lot_mrp, unit_price,
-                 taxable_value, cgst_rate, cgst_amt, sgst_rate, sgst_amt,
-                 igst_rate, igst_amt, cess_rate, cess_amt, total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                dn_number, item.get("sno"), sku_code, item.get("hsn_code"),
-                item.get("sku_desc"), item.get("reason"), item.get("remarks"),
-                item.get("exp_qty"), item.get("dn_qty"), item.get("lot_mrp"),
-                item.get("unit_price"), item.get("taxable_value"),
-                item.get("cgst_rate"), item.get("cgst_amt"),
-                item.get("sgst_rate"), item.get("sgst_amt"),
-                item.get("igst_rate"), item.get("igst_amt"),
-                item.get("cess_rate"), item.get("cess_amt"), item.get("total"),
-            ),
-        )
-        # MVP: a Discrepancy Note is stored as supporting/explanatory
-        # detail for a GRN discrepancy that was already detected (see
-        # reconcile.py's grn_discrepancies()) -- it does NOT automatically
-        # create a 'loss' movement. We don't yet have a confirmed business
-        # rule for converting a discrepancy reason into a specific
-        # inventory adjustment, so it's left unresolved rather than
-        # guessed. A real loss can still be recorded manually (see
-        # record_movement / the /movements/new form) once a human decides
-        # that's what actually happened.
-    conn.commit()
-    return dn_number
-
-
 def upsert_debit_note(conn, parsed, source_file=None, customer_name=DEFAULT_CUSTOMER):
-    """Purely the financial side (how much got deducted from payout).
-    The physical loss itself is recorded by upsert_discrepancy_note --
-    this table exists so the two can be cross-checked against each other."""
+    """Purely the financial side (how much got deducted from payout)."""
     note_number = parsed["note_number"]
     if not note_number:
         raise ValueError("Parsed debit note has no note_number, refusing to store it")
@@ -779,9 +675,6 @@ if __name__ == "__main__":
     elif command == "grn":
         result = upsert_grn(conn, parse_grn_pdf(path), source_file=Path(path).name)
         print(f"Stored GRN {result}")
-    elif command == "discrepancy-note":
-        result = upsert_discrepancy_note(conn, parse_discrepancy_note_pdf(path), source_file=Path(path).name)
-        print(f"Stored discrepancy note {result}")
     elif command == "debit-note":
         result = upsert_debit_note(conn, parse_debit_note_pdf(path), source_file=Path(path).name)
         print(f"Stored debit note {result}")

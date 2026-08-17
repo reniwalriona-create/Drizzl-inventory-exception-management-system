@@ -68,28 +68,6 @@ def validate_grn(parsed):
     return issues
 
 
-def validate_discrepancy_note(parsed):
-    issues = []
-    if not parsed.get("dn_number"):
-        issues.append("Missing dn_number")
-
-    items = parsed.get("line_items") or []
-    if not items:
-        issues.append("No line items found")
-
-    dn_amt = parsed.get("dn_amt")
-    items_amt_sum = sum(i.get("total") or 0 for i in items)
-    if items and not _close_enough(dn_amt, items_amt_sum):
-        issues.append(f"dn_amt ({dn_amt}) does not match sum of line item totals ({items_amt_sum:.2f})")
-
-    total_dn_qty = parsed.get("total_dn_qty")
-    items_qty_sum = sum(i.get("dn_qty") or 0 for i in items)
-    if items and total_dn_qty is not None and total_dn_qty != items_qty_sum:
-        issues.append(f"total_dn_qty ({total_dn_qty}) does not match sum of line item dn_qty ({items_qty_sum})")
-
-    return issues
-
-
 def validate_debit_note(parsed):
     issues = []
     if not parsed.get("note_number"):

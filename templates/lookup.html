@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Look up document - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>Look up a PO, GRN, or Discrepancy Note</h1>
-<p class="subtitle">Type any one of the three numbers and it pulls the whole chain: the PO, every GRN delivered against it, any Discrepancy Notes, the ledger movements they created, and any flags raised while parsing them.</p>
+<h1>Look up a PO or GRN</h1>
+<p class="subtitle">Type either number and it pulls the whole chain: the PO, every GRN delivered against it, the canonical PO-vs-GRN discrepancy comparison, the ledger movements they created, and any flags raised while parsing them.</p>
 
 <div class="panel">
   <form method="get" class="row" style="align-items:flex-end;">
     <div class="field">
-      <label for="q">PO / GRN / Discrepancy Note number</label>
+      <label for="q">PO / GRN number</label>
       <input type="text" name="q" id="q" value="{{ query or '' }}" autofocus>
     </div>
     <div class="field" style="flex:0;">
@@ -18,7 +18,7 @@
 
 {% if query and not result %}
 <div class="panel">
-  <p class="empty">No PO, GRN, or Discrepancy Note found with number "{{ query }}".</p>
+  <p class="empty">No PO or GRN found with number "{{ query }}".</p>
 </div>
 {% endif %}
 
@@ -79,6 +79,28 @@
   </table>
   {% else %}
   <p class="empty">No line items parsed for this PO.</p>
+  {% endif %}
+
+  <h2>PO vs GRN discrepancy (canonical, official records)</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Computed Shortfall = PO Ordered &minus; GRN Received, from official posted records only (product_id + external_sku identity) -- never from Source DN Qty, which is a separate audit fact from the CSV's own rejection figure. Only canonical PO lines with at least one official GRN posted are shown.</p>
+  {% if result.po.discrepancies %}
+  <table>
+    <tr><th>Customer SKU</th><th>Master Product</th><th>Master Barcode</th><th>PO Ordered</th><th>GRN Received</th><th>Computed Shortfall</th><th>Source DN Qty</th><th>Status</th></tr>
+    {% for r in result.po.discrepancies %}
+    <tr>
+      <td>{{ r.external_sku }}</td>
+      <td>{{ r.product_name or "" }}</td>
+      <td>{{ r.barcode or "" }}</td>
+      <td>{{ "%.0f"|format(r.ordered_qty) }}</td>
+      <td>{{ "%.0f"|format(r.received_qty) }}</td>
+      <td class="{{ 'neg' if r.computed_shortfall_qty > 0 }}">{{ "%+.0f"|format(r.computed_shortfall_qty) }}</td>
+      <td>{{ "%.0f"|format(r.source_dn_quantity) if r.source_dn_quantity is not none else "" }}</td>
+      <td>{% if r.status == "SHORT" %}<span class="badge" style="background: var(--warn-bg); color: var(--warn);">SHORT</span>{% else %}<span class="badge">COMPLETE</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No canonical discrepancy data -- either this PO has no product_id-identified lines (legacy PDF-sourced PO), or no official GRN has been posted against it yet.</p>
   {% endif %}
 </div>
 {% endif %}
@@ -162,52 +184,6 @@
   </table>
   {% else %}
   <p class="empty">No movements created from this GRN.</p>
-  {% endif %}
-</div>
-{% endfor %}
-{% endif %}
-
-{% if result.discrepancy_notes %}
-{% for dn in result.discrepancy_notes %}
-<div class="panel">
-  <div class="row" style="justify-content:space-between; align-items:flex-start;">
-    <h2 style="margin-top:0;">Discrepancy Note {{ dn.dn_number }}{% if dn.grn_number %} <span class="badge">GRN {{ dn.grn_number }}</span>{% endif %}</h2>
-    {% if dn.voided %}
-    <form method="post" action="{{ url_for('restore_discrepancy_note_route', dn_number=dn.dn_number) }}">
-      <button type="submit">Restore Discrepancy Note</button>
-    </form>
-    {% else %}
-    <form method="post" action="{{ url_for('void_discrepancy_note_route', dn_number=dn.dn_number) }}" class="row" style="align-items:flex-end;"
-          onsubmit="return confirm('Void Discrepancy Note {{ dn.dn_number }}? It stays visible here, just excluded from every calculation -- restorable anytime.');">
-      <div class="field" style="margin-bottom:0;">
-        <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
-      </div>
-      <button type="submit" style="background: var(--warn);">Void Discrepancy Note</button>
-    </form>
-    {% endif %}
-  </div>
-  {% if dn.voided %}
-  <p class="flash flash-warning">VOIDED{% if dn.voided_at %} ({{ dn.voided_at }}){% endif %}: {{ dn.void_reason }}</p>
-  {% endif %}
-  <p class="subtitle" style="margin:0 0 10px;">
-    Date: {{ dn.dn_date or "" }} &middot;
-    DN amount: {{ dn.dn_amt if dn.dn_amt is not none else "" }}
-  </p>
-  {% if dn.line_items %}
-  <table>
-    <tr><th>SKU</th><th>Description</th><th>Reason</th><th>Remarks</th><th>DN Qty</th></tr>
-    {% for li in dn.line_items %}
-    <tr>
-      <td>{{ li.sku_code }}</td>
-      <td>{{ li.sku_desc or "" }}</td>
-      <td>{{ li.reason or "" }}</td>
-      <td>{{ li.remarks or "" }}</td>
-      <td>{{ "%.0f"|format(li.dn_qty) if li.dn_qty is not none else "" }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}
-  <p class="empty">No line items parsed for this Discrepancy Note.</p>
   {% endif %}
 </div>
 {% endfor %}

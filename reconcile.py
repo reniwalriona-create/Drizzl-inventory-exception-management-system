@@ -210,7 +210,7 @@ def committed_quantity(conn):
         `ordered - received`, the moment any non-voided GRN line exists
         for that (po_number, sku_code) pair, the line's commitment drops
         to 0 for good; a shortfall becomes a discrepancy (see
-        grn_discrepancies()), not a remaining PO commitment."""
+        po_vs_received_shortfall()), not a remaining PO commitment."""
     return conn.execute(
         """
         SELECT
@@ -399,11 +399,24 @@ def damaged_units_by_cause(conn, sku_code=None, location=None):
 
 
 def po_vs_received_shortfall(conn, sku_code=None):
-    """Per PO line item: across all GRNs tied to that PO, has the full
+    """LEGACY-ONLY (Phase 9): per PO line item on a legacy PDF-sourced PO
+    (product_id IS NULL), across all GRNs tied to that PO, has the full
     ordered quantity been received (sold) yet? Only meaningful for POs
     whose PDF has actually been parsed (stub POs have no line items).
     No location filter -- a PO/GRN isn't tied to a specific Drizzl
-    location, it's what Scootsy received."""
+    location, it's what Scootsy received.
+
+    Restricted to product_id IS NULL on BOTH sides (the PO line and the
+    matched GRN line) so this can never overlap with a canonical
+    (Phase 5/8, product_id IS NOT NULL) PO/GRN -- canonical discrepancy
+    reporting is official_po_grn_discrepancies()/official_discrepancies()
+    only, which key on (product_id, external_sku), not this function's
+    sku_code text match. Before Phase 9 this function silently covered
+    canonical POs too (item_code mirrors external_sku by construction),
+    which meant two different algorithms could evaluate the same
+    canonical PO -- the sku_code-string one here, and the product_id-keyed
+    one in official_po_grn_discrepancies(). That overlap is now closed:
+    a canonical PO line never appears in this report's output, full stop."""
     query = """
         SELECT
             p.item_code AS sku_code,
@@ -416,11 +429,12 @@ def po_vs_received_shortfall(conn, sku_code=None):
         JOIN purchase_orders po ON po.po_number = p.po_number AND po.voided = 0
         LEFT JOIN grn_receipts g ON g.po_number = p.po_number
         LEFT JOIN grn_line_items gli
-            ON gli.grn_number = g.grn_number AND gli.sku_code = p.item_code
+            ON gli.grn_number = g.grn_number AND gli.sku_code = p.item_code AND gli.product_id IS NULL
+        WHERE p.product_id IS NULL
     """
     params = []
     if sku_code:
-        query += " WHERE p.item_code = ?"
+        query += " AND p.item_code = ?"
         params.append(sku_code)
     query += (
         " GROUP BY p.po_number, p.item_code"
@@ -430,63 +444,138 @@ def po_vs_received_shortfall(conn, sku_code=None):
     return conn.execute(query, params).fetchall()
 
 
-def grn_discrepancies(conn, sku_code=None):
-    """GRN lines where the delivery's expected quantity (only known for
-    PDF-sourced GRNs -- see schema.sql) doesn't match what was actually
-    received. This is the MVP discrepancy workflow: PO -> GRN -> if
-    expected != received, this shows up here as unresolved until a
-    matching Discrepancy Note is attached (or a human otherwise resolves
-    it) -- see ingest.py, which deliberately does NOT auto-create a loss
-    movement for this. No location filter -- GRN lines aren't tied to a
-    specific Drizzl location."""
-    query = """
-        SELECT
-            gr.po_number,
-            gli.grn_number,
-            gli.sku_code,
-            p.sku_desc,
-            gli.expected_qty,
-            gli.received_qty,
-            (gli.expected_qty - gli.received_qty) AS discrepancy_qty,
-            dn.dn_number,
-            dni.reason,
-            dni.remarks
-        FROM grn_line_items gli
-        JOIN grn_receipts gr ON gr.grn_number = gli.grn_number AND gr.voided = 0
-        LEFT JOIN products p ON p.sku_code = gli.sku_code
-        LEFT JOIN discrepancy_notes dn ON dn.grn_number = gli.grn_number AND dn.voided = 0
-        LEFT JOIN discrepancy_note_items dni
-            ON dni.dn_number = dn.dn_number AND dni.sku_code = gli.sku_code
-        WHERE gli.expected_qty IS NOT NULL
-          AND gli.expected_qty != gli.received_qty
-    """
-    params = []
-    if sku_code:
-        query += " AND gli.sku_code = ?"
-        params.append(sku_code)
-    query += " ORDER BY gli.grn_number, gli.sku_code"
-    return conn.execute(query, params).fetchall()
+def official_po_grn_discrepancies(conn, po_number):
+    """Canonical PO-vs-GRN discrepancy comparison for one official,
+    non-voided PO (Phase 9). Replaces the old grn_discrepancies(), which
+    depended on the Discrepancy Note PDF workflow removed in Phase 9 --
+    the system now has authoritative ordered/received data of its own
+    (official purchase_orders/po_line_items vs. grn_receipts/
+    grn_line_items), so a separately-uploaded document is no longer
+    needed to know there's a shortfall, only to know *why* (out of scope
+    here -- see PROJECT_HANDOFF.md's "what's left" list for the future
+    PR/DN workflow).
 
+    Operates strictly on OFFICIAL posted records, never staging tables --
+    once a PO/GRN is posted, these are the business truth (staging stays
+    audit lineage; see grn_csv_staging.get_grn_po_comparison() for the
+    pre-posting equivalent this mirrors). Grouping key is
+    (product_id, external_sku), never a bare SKU string -- product_id is
+    the true internal inventory identity (Phase 8). Only CANONICAL PO
+    lines (product_id IS NOT NULL) are considered; a legacy PDF-sourced
+    PO line has no product_id and isn't covered here -- see
+    po_vs_received_shortfall() for that path, kept as the still-needed
+    legacy fallback since PO/GRN PDF upload remains active.
 
-def debit_note_vs_discrepancy_note(conn):
-    """Does Swiggy's flat financial deduction (Debit Note) match the
-    itemized damage detail we actually have (Discrepancy Note) for the
-    same PO? A mismatch -- or a missing Discrepancy Note entirely --
-    means you're trusting a lump-sum number with no itemized backup."""
-    return conn.execute(
+    Returns [] if the PO doesn't exist, is voided, has no canonical
+    lines, or has no non-voided official GRN posted against it yet --
+    matches the spec's "for a posted canonical GRN" framing: an
+    unfulfilled PO isn't a discrepancy, it's just still open (see
+    committed_quantity() for the commitment side of that, unaffected by
+    this function).
+
+    computed_shortfall_qty = ordered_qty - received_qty, always -- never
+    derived from source_dn_quantity, which is carried through purely as a
+    separate audit fact (see grn_line_items.source_dn_quantity in
+    schema_postgres.sql) and must never be confused with the computed
+    shortfall. A product on the PO but completely absent from every GRN
+    line shows received_qty=0, shortfall=the full ordered quantity.
+    Multi-lot GRN lines for the same (product_id, external_sku) are
+    summed before comparing, so a split-lot receipt isn't mistaken for a
+    partial one.
+
+    status is COMPLETE (shortfall == 0) or SHORT (shortfall > 0) -- no
+    richer states yet (no resolved/approved/DN-verified/financially
+    settled), since only the operational quantity difference is known at
+    this phase."""
+    po = conn.execute(
+        "SELECT po_id FROM purchase_orders WHERE po_number = ? AND voided = 0", (po_number,)
+    ).fetchone()
+    if po is None:
+        return []
+    has_grn = conn.execute(
+        "SELECT 1 FROM grn_receipts WHERE po_id = ? AND voided = 0 LIMIT 1", (po["po_id"],)
+    ).fetchone()
+    if not has_grn:
+        return []
+
+    po_rows = conn.execute(
         """
-        SELECT
-            dn.note_number,
-            dn.po_number,
-            dn.total_amount AS debit_note_total,
-            dc.dn_amt AS discrepancy_note_total,
-            dc.dn_number
-        FROM debit_notes dn
-        LEFT JOIN discrepancy_notes dc ON dc.po_number = dn.po_number
-        WHERE dc.dn_number IS NULL
-           OR ABS(COALESCE(dc.dn_amt, 0) - COALESCE(dn.total_amount, 0)) > 0.01
-        """
+        SELECT pli.product_id, pli.external_sku, MAX(mp.barcode) AS barcode, MAX(mp.product_name) AS product_name,
+               SUM(pli.qty) AS ordered_qty
+        FROM po_line_items pli
+        LEFT JOIN master_products mp ON mp.product_id = pli.product_id
+        WHERE pli.po_number = ? AND pli.product_id IS NOT NULL
+        GROUP BY pli.product_id, pli.external_sku
+        """,
+        (po_number,),
     ).fetchall()
+
+    grn_rows = conn.execute(
+        """
+        SELECT gli.product_id, gli.external_sku,
+               SUM(gli.received_qty) AS received_qty,
+               SUM(COALESCE(gli.source_dn_quantity, 0)) AS source_dn_quantity
+        FROM grn_line_items gli
+        JOIN grn_receipts gr ON gr.grn_number = gli.grn_number
+        WHERE gr.po_id = ? AND gr.voided = 0 AND gli.product_id IS NOT NULL
+        GROUP BY gli.product_id, gli.external_sku
+        """,
+        (po["po_id"],),
+    ).fetchall()
+    grn_by_key = {(r["product_id"], r["external_sku"]): r for r in grn_rows}
+
+    results = []
+    for r in po_rows:
+        key = (r["product_id"], r["external_sku"])
+        g = grn_by_key.get(key)
+        received_qty = g["received_qty"] if g else 0
+        source_dn_quantity = g["source_dn_quantity"] if g else None
+        ordered_qty = r["ordered_qty"] or 0
+        shortfall = ordered_qty - received_qty
+        results.append({
+            "po_number": po_number,
+            "product_id": r["product_id"],
+            "external_sku": r["external_sku"],
+            "barcode": r["barcode"],
+            "product_name": r["product_name"],
+            "ordered_qty": ordered_qty,
+            "received_qty": received_qty,
+            "computed_shortfall_qty": shortfall,
+            "source_dn_quantity": source_dn_quantity,
+            "status": "COMPLETE" if shortfall == 0 else "SHORT",
+        })
+    results.sort(key=lambda r: (r["product_name"] or "", r["external_sku"] or ""))
+    return results
+
+
+def official_discrepancies(conn, sku_code=None):
+    """official_po_grn_discrepancies() across every posted canonical PO
+    that has a non-voided official GRN against it -- feeds the
+    dashboard's discrepancy panel. sku_code filters on external_sku (the
+    dashboard's existing SKU filter box happens to line up with
+    external_sku for canonical lines by construction). Covers exactly
+    the PO lines po_vs_received_shortfall() now deliberately excludes
+    (product_id IS NOT NULL) -- the two never overlap on the same PO
+    line, see po_vs_received_shortfall()'s docstring for why that
+    separation matters."""
+    po_numbers = [
+        r["po_number"] for r in conn.execute(
+            """
+            SELECT DISTINCT po.po_number
+            FROM purchase_orders po
+            JOIN grn_receipts gr ON gr.po_id = po.po_id AND gr.voided = 0
+            WHERE po.voided = 0
+            ORDER BY po.po_number
+            """
+        ).fetchall()
+    ]
+    rows = []
+    for po_number in po_numbers:
+        rows.extend(official_po_grn_discrepancies(conn, po_number))
+    if sku_code:
+        rows = [r for r in rows if r["external_sku"] == sku_code]
+    rows.sort(key=lambda r: (-r["computed_shortfall_qty"], r["po_number"]))
+    return rows
 
 
 def po_quantity_by_facility(conn, sku_code=None):
@@ -637,8 +726,8 @@ def unresolved_inventory_flags(conn):
 
 
 def voided_entries(conn):
-    """Every voided PO/GRN/Discrepancy Note/manual movement, most recent
-    first -- the review trail that makes void safe to use liberally. If
+    """Every voided PO/GRN/manual movement, most recent first -- the
+    review trail that makes void safe to use liberally. If
     something gets voided by mistake, this is where a human would notice
     it (nothing else on the dashboard surfaces a voided entry unless you
     already know to look it up) and restore it via the matching
@@ -652,9 +741,6 @@ def voided_entries(conn):
                       "reason": r["void_reason"], "voided_at": r["voided_at"]})
     for r in conn.execute("SELECT grn_number, void_reason, voided_at FROM grn_receipts WHERE voided = 1").fetchall():
         rows.append({"type": "grn", "id": r["grn_number"], "label": f"GRN {r['grn_number']}",
-                      "reason": r["void_reason"], "voided_at": r["voided_at"]})
-    for r in conn.execute("SELECT dn_number, void_reason, voided_at FROM discrepancy_notes WHERE voided = 1").fetchall():
-        rows.append({"type": "discrepancy_note", "id": r["dn_number"], "label": f"Discrepancy Note {r['dn_number']}",
                       "reason": r["void_reason"], "voided_at": r["voided_at"]})
     for r in conn.execute(
         "SELECT id, sku_code, movement_type, quantity, void_reason, voided_at FROM inventory_movements "
@@ -696,41 +782,37 @@ def purchase_orders_by_facility(conn, facility=None):
 
 
 def lookup_document(conn, query):
-    """Given a PO number, GRN number, or Discrepancy Note number (any one
-    of the three), trace the whole chain -- PO -> GRN(s) -> Discrepancy
-    Note(s) -- plus the ledger movements and ingestion flags tied to it.
-    Unlike the dashboard's location/SKU filters (which only narrow the
-    live balance and the 25-row recent-movements list), this searches
+    """Given a PO number or GRN number, trace the whole chain -- PO ->
+    GRN(s) -- plus the ledger movements and ingestion flags tied to it,
+    and (Phase 9) the canonical PO-vs-GRN discrepancy comparison for the
+    PO. Unlike the dashboard's location/SKU filters (which only narrow
+    the live balance and the 25-row recent-movements list), this searches
     the actual document tables directly, so it isn't limited by a row
     cap or by whether a movement's location happens to match a filter.
 
     Returns None if nothing matches, otherwise a dict with whichever of
-    'po' / 'grns' / 'discrepancy_notes' were found, plus their line
-    items, linked movements, and any ingestion flags."""
+    'po' / 'grns' were found, plus their line items, linked movements,
+    and any ingestion flags."""
     query = (query or "").strip()
     if not query:
         return None
 
     po = conn.execute("SELECT * FROM purchase_orders WHERE po_number = ?", (query,)).fetchone()
     grn_direct = conn.execute("SELECT * FROM grn_receipts WHERE grn_number = ?", (query,)).fetchone()
-    dn_direct = conn.execute("SELECT * FROM discrepancy_notes WHERE dn_number = ?", (query,)).fetchone()
 
-    if not (po or grn_direct or dn_direct):
+    if not (po or grn_direct):
         return None
 
-    po_number = (po["po_number"] if po else None) or (grn_direct["po_number"] if grn_direct else None) \
-        or (dn_direct["po_number"] if dn_direct else None)
+    po_number = (po["po_number"] if po else None) or (grn_direct["po_number"] if grn_direct else None)
 
     grn_numbers = set()
     if grn_direct:
         grn_numbers.add(grn_direct["grn_number"])
-    if dn_direct and dn_direct["grn_number"]:
-        grn_numbers.add(dn_direct["grn_number"])
     if po_number:
         for row in conn.execute("SELECT grn_number FROM grn_receipts WHERE po_number = ?", (po_number,)).fetchall():
             grn_numbers.add(row["grn_number"])
 
-    result = {"query": query, "po": None, "grns": [], "discrepancy_notes": [], "flags": []}
+    result = {"query": query, "po": None, "grns": [], "flags": []}
 
     if po:
         result["po"] = dict(po)
@@ -743,6 +825,7 @@ def lookup_document(conn, query):
                 "SELECT * FROM po_line_items WHERE po_number = ? ORDER BY sno", (po_number,)
             ).fetchall()
         ]
+        result["po"]["discrepancies"] = official_po_grn_discrepancies(conn, po_number)
 
     for grn_number in sorted(grn_numbers):
         grn = conn.execute("SELECT * FROM grn_receipts WHERE grn_number = ?", (grn_number,)).fetchone()
@@ -770,38 +853,10 @@ def lookup_document(conn, query):
         ]
         result["grns"].append(grn_dict)
 
-    dn_rows = []
-    if dn_direct:
-        dn_rows.append(dn_direct)
-    if po_number:
-        dn_rows.extend(conn.execute(
-            "SELECT * FROM discrepancy_notes WHERE po_number = ?", (po_number,)
-        ).fetchall())
-    if grn_numbers:
-        placeholders = ",".join("?" * len(grn_numbers))
-        dn_rows.extend(conn.execute(
-            f"SELECT * FROM discrepancy_notes WHERE grn_number IN ({placeholders})",
-            tuple(grn_numbers),
-        ).fetchall())
-
-    seen_dn = set()
-    for dn in dn_rows:
-        if dn["dn_number"] in seen_dn:
-            continue
-        seen_dn.add(dn["dn_number"])
-        dn_dict = dict(dn)
-        dn_dict["line_items"] = [
-            dict(r) for r in conn.execute(
-                "SELECT * FROM discrepancy_note_items WHERE dn_number = ? ORDER BY sno", (dn["dn_number"],)
-            ).fetchall()
-        ]
-        result["discrepancy_notes"].append(dn_dict)
-
     doc_ids = set()
     if po_number:
         doc_ids.add(po_number)
     doc_ids |= grn_numbers
-    doc_ids |= seen_dn
     if doc_ids:
         placeholders = ",".join("?" * len(doc_ids))
         result["flags"] = [
@@ -843,7 +898,7 @@ def print_report():
         print(f"  {r['cause']}: {r['total_damaged']:.0f} units across {r['n_events']} event(s)")
 
     print()
-    print("=== Ordered vs Received shortfall (per PO line, parsed POs only) ===")
+    print("=== Ordered vs Received shortfall (legacy PDF-sourced PO lines only) ===")
     rows = po_vs_received_shortfall(conn)
     if not rows:
         print("None found.")
@@ -856,20 +911,17 @@ def print_report():
         )
 
     print()
-    print("=== GRN discrepancies (expected vs received) ===")
-    rows = grn_discrepancies(conn)
+    print("=== Official PO-vs-GRN discrepancies (canonical, product_id/external_sku) ===")
+    rows = official_discrepancies(conn)
     if not rows:
         print("None found.")
     for r in rows:
-        desc = (r["sku_desc"] or "")[:40]
-        dn_status = r["dn_number"] or "Missing / Awaiting Upload"
+        desc = (r["product_name"] or "")[:40]
         print(
-            f"  PO {r['po_number']} / GRN {r['grn_number']} - SKU {r['sku_code']} {desc!r}: "
-            f"expected {r['expected_qty']:.0f}, received {r['received_qty']:.0f} "
-            f"(difference {r['discrepancy_qty']:+.0f}) -- Discrepancy Note: {dn_status}"
+            f"  PO {r['po_number']} - SKU {r['external_sku']} {desc!r}: "
+            f"ordered {r['ordered_qty']:.0f}, received {r['received_qty']:.0f} "
+            f"(shortfall {r['computed_shortfall_qty']:+.0f}) -- {r['status']}"
         )
-        if r["dn_number"]:
-            print(f"      reason: {r['reason']}, remarks: {r['remarks']}")
 
     print()
     print("=== Documents flagged for review (parsed numbers didn't add up) ===")
