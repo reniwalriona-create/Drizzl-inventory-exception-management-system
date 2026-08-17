@@ -43,6 +43,15 @@
   </form>
 </div>
 {% endif %}
+{% if correction_target %}
+<div class="panel" style="border-color: var(--warn); background: var(--warn-bg);">
+  <p style="margin:0 0 10px; color: var(--warn);">
+    This GRN number already has an active official GRN posted (<strong>grn_id {{ correction_target.grn_id }}</strong>) --
+    this staged record is quarantined as a duplicate/correction conflict, not a normal post.
+  </p>
+  <a href="{{ url_for('correct_grn', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}"><button type="button">Correct / Replace GRN</button></a>
+</div>
+{% endif %}
 {% endif %}
 
 <div class="panel">
@@ -234,13 +243,14 @@
   <p class="subtitle" style="margin:0 0 10px;">Read-only. One SALE movement per normalized receipt line -- a multi-lot product shows multiple lines here, each tied to its own official GRN line.</p>
   {% if inventory_effect %}
   <table>
-    <tr><th>Master Product</th><th>Master Barcode</th><th>Quantity</th><th>From Location</th></tr>
+    <tr><th>Master Product</th><th>Master Barcode</th><th>Quantity</th><th>From Location</th><th></th></tr>
     {% for m in inventory_effect %}
     <tr>
       <td>{{ m.product_name or "" }}</td>
       <td>{{ m.barcode or "" }}</td>
       <td>-{{ "%.0f"|format(m.quantity) }}</td>
       <td>{{ m.from_location or "" }}</td>
+      <td>{% if m.voided %}<span class="badge">VOIDED</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table>

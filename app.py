@@ -22,6 +22,7 @@ from grn_parser import parse_grn_pdf
 from ingest import (
     assign_grn_source_location,
     assign_po_source_location,
+    correct_po_source_location,
     record_inventory_flag,
     record_movement,
     unvoid_grn,
@@ -593,17 +594,25 @@ def void_grn_route(grn_number):
     return redirect(url_for("lookup", q=grn_number))
 
 
-@app.route("/grn/<grn_number>/restore", methods=["POST"])
-def restore_grn_route(grn_number):
+@app.route("/grn/<int:grn_id>/restore", methods=["POST"])
+def restore_grn_route(grn_id):
+    """Phase 10: keyed by grn_id (the real, unambiguous identity), not
+    grn_number -- a voided GRN's grn_number can be shared with its
+    active replacement in a supersede chain (see ingest.unvoid_grn())."""
     conn = get_connection()
     try:
-        unvoid_grn(conn, grn_number)
-        log_activity(conn, "grn_restored", f"Restored GRN {grn_number} (and its sale movement(s))", "grn", grn_number)
+        row = conn.execute("SELECT grn_number FROM grn_receipts WHERE grn_id = ?", (grn_id,)).fetchone()
+        grn_number = row["grn_number"] if row else None
+        unvoid_grn(conn, grn_id)
+        log_activity(conn, "grn_restored", f"Restored GRN {grn_number} (grn_id {grn_id}) (and its sale movement(s))", "grn", grn_number)
         conn.commit()
         flash(f"GRN {grn_number} restored.", "success")
+    except ValueError as e:
+        conn.rollback()
+        flash(str(e), "error")
     finally:
         conn.close()
-    return redirect(url_for("lookup", q=grn_number))
+    return redirect(url_for("lookup", q=grn_number) if grn_number else url_for("dashboard"))
 
 
 @app.route("/movements/<int:movement_id>/void", methods=["POST"])
@@ -985,17 +994,33 @@ def staged_grn_detail(batch_id, staged_grn_id):
             official_grn = conn.execute(
                 "SELECT * FROM grn_receipts WHERE grn_id = ?", (grn["posted_grn_id"],)
             ).fetchone()
+            # Scoped via source_grn_line_item_id -> grn_line_items.grn_id
+            # (this staged record's OWN posted_grn_id), not reference_id
+            # text -- if the GRN this staged record posted has since
+            # been superseded by a correction, a plain grn_number match
+            # would incorrectly show the REPLACEMENT's movements here
+            # instead of this record's own (now-voided) ones.
             inventory_effect = conn.execute(
                 """
-                SELECT m.quantity, m.product_id, mp.barcode, mp.product_name, lf.name AS from_location
+                SELECT m.quantity, m.product_id, mp.barcode, mp.product_name, lf.name AS from_location, m.voided
                 FROM inventory_movements m
                 LEFT JOIN master_products mp ON mp.product_id = m.product_id
                 LEFT JOIN locations lf ON lf.id = m.location_from_id
-                WHERE m.reference_type = 'grn' AND m.reference_id = ? AND m.voided = 0
+                WHERE m.reference_type = 'grn' AND m.source_grn_line_item_id IN (
+                    SELECT id FROM grn_line_items WHERE grn_id = ?
+                )
                 ORDER BY m.id
                 """,
-                (grn["external_grn_number"],),
+                (grn["posted_grn_id"],),
             ).fetchall()
+
+        # Phase 10: offer Correct/Replace only when this staged GRN is
+        # not yet posted itself and genuinely conflicts with a currently
+        # active official GRN (grn_posting._conflict_failures()'s
+        # official_grn_already_exists case) -- never shown otherwise.
+        correction_target = None
+        if grn["posted_grn_id"] is None:
+            correction_target = grn_posting.find_correction_target(conn, staged_grn_id)
 
         return render_template(
             "staged_grn_detail.html",
@@ -1007,6 +1032,7 @@ def staged_grn_detail(batch_id, staged_grn_id):
             inventory_effect=inventory_effect,
             comparison=grn_csv_staging.get_grn_po_comparison(conn, staged_grn_id),
             raw_rows=grn_csv_staging.get_staged_grn_raw_rows(conn, staged_grn_id),
+            correction_target=correction_target,
         )
     finally:
         conn.close()
@@ -1120,6 +1146,98 @@ def post_staged_grns_route(batch_id):
     finally:
         conn.close()
     return redirect(url_for("grn_import_review", batch_id=batch_id))
+
+
+@app.route("/grn-import/<int:batch_id>/grn/<int:staged_grn_id>/correct", methods=["GET", "POST"])
+def correct_grn(batch_id, staged_grn_id):
+    """Phase 10: the explicit Correct/Replace workflow for a staged GRN
+    that's quarantined because it duplicates an already-posted official
+    GRN's grn_number -- never automatic, never inferred from filename/
+    timestamp. GET shows a side-by-side comparison and requires a
+    reason; POST performs the atomic void-old/post-corrected replacement
+    (grn_posting.replace_posted_grn())."""
+    conn = get_connection()
+    try:
+        staged_grn = grn_csv_staging.get_staged_grn(conn, staged_grn_id)
+        if staged_grn is None or staged_grn["batch_id"] != batch_id:
+            abort(404, description="This staged GRN does not belong to this batch.")
+
+        target = grn_posting.find_correction_target(conn, staged_grn_id)
+        if target is None:
+            flash("No active official GRN conflicts with this staged GRN -- nothing to correct.", "error")
+            return redirect(url_for("staged_grn_detail", batch_id=batch_id, staged_grn_id=staged_grn_id))
+
+        if request.method == "POST":
+            reason = (request.form.get("reason") or "").strip()
+            try:
+                result = grn_posting.replace_posted_grn(conn, target["grn_id"], staged_grn_id, reason)
+                log_activity(
+                    conn, "grn_replaced",
+                    f"Replaced GRN {target['grn_number']} (grn_id {target['grn_id']}) with corrected GRN "
+                    f"{result['grn_number']} (grn_id {result['grn_id']}): {reason}",
+                    "grn", result["grn_number"],
+                )
+                conn.commit()
+                flash(
+                    f"GRN {target['grn_number']} replaced with corrected GRN {result['grn_number']}. The "
+                    "original stays in history as VOIDED/SUPERSEDED.",
+                    "success",
+                )
+                return redirect(url_for("lookup", q=result["grn_number"]))
+            except (ValueError, grn_posting.CorrectionError) as e:
+                conn.rollback()
+                flash(str(e), "error")
+                return redirect(url_for("correct_grn", batch_id=batch_id, staged_grn_id=staged_grn_id))
+
+        # Scoped by grn_id, not grn_number text -- grn_number alone can't
+        # disambiguate once a supersede chain exists (Phase 10).
+        old_lines = conn.execute(
+            "SELECT * FROM grn_line_items WHERE grn_id = ? ORDER BY sku_code", (target["grn_id"],)
+        ).fetchall()
+        old_source_location = reconcile.resolve_grn_source_location(conn, target["grn_number"])
+
+        return render_template(
+            "grn_correction_confirm.html",
+            batch_id=batch_id,
+            staged_grn=staged_grn,
+            staged_grn_id=staged_grn_id,
+            old_grn=target,
+            old_lines=old_lines,
+            old_source_location=old_source_location,
+            comparison=grn_csv_staging.get_grn_po_comparison(conn, staged_grn_id),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/po/<po_number>/correct-source", methods=["POST"])
+def correct_po_source_route(po_number):
+    """Phase 10: the explicit, audited way to change a PO's Drizzl
+    source warehouse once it's already been assigned -- blocked
+    server-side (see ingest.correct_po_source_location()) if an active
+    official GRN already exists against this PO, since that GRN's SALE
+    movement(s) were recorded from the current warehouse and changing
+    the PO's source alone would not move that history."""
+    conn = get_connection()
+    try:
+        location_name = (request.form.get("source_location") or "").strip()
+        reason = (request.form.get("reason") or "").strip()
+        if not location_name:
+            raise ValueError("Choose a new Drizzl location.")
+        correct_po_source_location(conn, po_number, location_name, reason)
+        log_activity(
+            conn, "po_source_corrected",
+            f"Corrected PO {po_number}'s source warehouse to {location_name}: {reason}",
+            "po", po_number,
+        )
+        conn.commit()
+        flash(f"PO {po_number}'s source warehouse corrected to {location_name}.", "success")
+    except ValueError as e:
+        conn.rollback()
+        flash(str(e), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("lookup", q=po_number))
 
 
 if __name__ == "__main__":

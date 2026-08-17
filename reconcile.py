@@ -232,7 +232,7 @@ def committed_quantity(conn):
                 NOT EXISTS (
                     SELECT 1
                     FROM grn_receipts gr
-                    JOIN grn_line_items gli ON gli.grn_number = gr.grn_number
+                    JOIN grn_line_items gli ON gli.grn_id = gr.grn_id
                     WHERE gr.po_number = p.po_number
                       AND gr.voided = 0
                       AND gli.sku_code = p.item_code
@@ -322,7 +322,7 @@ def resolve_grn_source_location(conn, grn_number):
         LEFT JOIN locations gl ON gl.id = gr.source_location_id
         LEFT JOIN purchase_orders po ON po.po_number = gr.po_number AND po.voided = 0
         LEFT JOIN locations pl ON pl.id = po.source_location_id
-        WHERE gr.grn_number = ?
+        WHERE gr.grn_number = ? AND gr.voided = 0
         """,
         (grn_number,),
     ).fetchone()
@@ -516,7 +516,7 @@ def official_po_grn_discrepancies(conn, po_number):
                SUM(gli.received_qty) AS received_qty,
                SUM(COALESCE(gli.source_dn_quantity, 0)) AS source_dn_quantity
         FROM grn_line_items gli
-        JOIN grn_receipts gr ON gr.grn_number = gli.grn_number
+        JOIN grn_receipts gr ON gr.grn_id = gli.grn_id
         WHERE gr.po_id = ? AND gr.voided = 0 AND gli.product_id IS NOT NULL
         GROUP BY gli.product_id, gli.external_sku
         """,
@@ -739,9 +739,24 @@ def voided_entries(conn):
     for r in conn.execute("SELECT po_number, void_reason, voided_at FROM purchase_orders WHERE voided = 1").fetchall():
         rows.append({"type": "po", "id": r["po_number"], "label": f"PO {r['po_number']}",
                       "reason": r["void_reason"], "voided_at": r["voided_at"]})
-    for r in conn.execute("SELECT grn_number, void_reason, voided_at FROM grn_receipts WHERE voided = 1").fetchall():
-        rows.append({"type": "grn", "id": r["grn_number"], "label": f"GRN {r['grn_number']}",
-                      "reason": r["void_reason"], "voided_at": r["voided_at"]})
+    for r in conn.execute(
+        "SELECT grn_id, grn_number, void_reason, voided_at, supersedes_grn_id FROM grn_receipts WHERE voided = 1"
+    ).fetchall():
+        # Phase 10: "id" is grn_id (the real, unambiguous identity), not
+        # grn_number -- a voided GRN's grn_number is no longer
+        # guaranteed unique on its own (a superseded predecessor and its
+        # active replacement can share one). superseded is True when
+        # ANOTHER, currently-active GRN explicitly replaced this one --
+        # the dashboard hides the Restore button for those (see
+        # ingest.unvoid_grn()'s matching server-side refusal).
+        superseded_by = conn.execute(
+            "SELECT grn_number FROM grn_receipts WHERE supersedes_grn_id = ? AND voided = 0", (r["grn_id"],)
+        ).fetchone()
+        rows.append({
+            "type": "grn", "id": r["grn_id"], "label": f"GRN {r['grn_number']}",
+            "reason": r["void_reason"], "voided_at": r["voided_at"],
+            "superseded_by_grn_number": superseded_by["grn_number"] if superseded_by else None,
+        })
     for r in conn.execute(
         "SELECT id, sku_code, movement_type, quantity, void_reason, voided_at FROM inventory_movements "
         "WHERE voided = 1 AND reference_type = 'manual'"
@@ -798,19 +813,34 @@ def lookup_document(conn, query):
         return None
 
     po = conn.execute("SELECT * FROM purchase_orders WHERE po_number = ?", (query,)).fetchone()
-    grn_direct = conn.execute("SELECT * FROM grn_receipts WHERE grn_number = ?", (query,)).fetchone()
+    # Phase 10: a bare grn_number is no longer guaranteed to identify a
+    # single row (a superseded predecessor can share one with its active
+    # replacement), so this collects every matching ROW (by grn_id), not
+    # just whichever one .fetchone() happened to pick. When resolving
+    # po_number below, the active one wins if there is one (matches what
+    # a human searching this number almost always means), else the most
+    # recently created historical one.
+    grn_direct_candidates = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM grn_receipts WHERE grn_number = ? ORDER BY grn_id DESC", (query,)
+        ).fetchall()
+    ]
+    grn_direct = next((g for g in grn_direct_candidates if not g["voided"]), None) or \
+        (grn_direct_candidates[0] if grn_direct_candidates else None)
 
     if not (po or grn_direct):
         return None
 
     po_number = (po["po_number"] if po else None) or (grn_direct["po_number"] if grn_direct else None)
 
-    grn_numbers = set()
-    if grn_direct:
-        grn_numbers.add(grn_direct["grn_number"])
+    # Every grn_receipts ROW (grn_id) tied to this PO -- a correction
+    # never changes po_number (a replacement is inserted with the exact
+    # same one as what it supersedes), so this naturally captures the
+    # WHOLE history chain, not just whichever row is currently active.
+    grn_ids = {g["grn_id"] for g in grn_direct_candidates}
     if po_number:
-        for row in conn.execute("SELECT grn_number FROM grn_receipts WHERE po_number = ?", (po_number,)).fetchall():
-            grn_numbers.add(row["grn_number"])
+        for row in conn.execute("SELECT grn_id FROM grn_receipts WHERE po_number = ?", (po_number,)).fetchall():
+            grn_ids.add(row["grn_id"])
 
     result = {"query": query, "po": None, "grns": [], "flags": []}
 
@@ -827,30 +857,68 @@ def lookup_document(conn, query):
         ]
         result["po"]["discrepancies"] = official_po_grn_discrepancies(conn, po_number)
 
-    for grn_number in sorted(grn_numbers):
-        grn = conn.execute("SELECT * FROM grn_receipts WHERE grn_number = ?", (grn_number,)).fetchone()
+    grn_numbers = set()
+    for grn_id in sorted(grn_ids):
+        grn = conn.execute("SELECT * FROM grn_receipts WHERE grn_id = ?", (grn_id,)).fetchone()
         if not grn:
             continue
+        grn_number = grn["grn_number"]
+        grn_numbers.add(grn_number)
         grn_dict = dict(grn)
-        grn_dict["source_location"] = resolve_grn_source_location(conn, grn_number)
+        # Only meaningful (and only correct to resolve) for the ACTIVE
+        # occurrence of this grn_number -- a voided/superseded row's
+        # historical source is whatever its own SALE movements' From
+        # location already shows below, not a live re-resolution.
+        grn_dict["source_location"] = resolve_grn_source_location(conn, grn_number) if not grn["voided"] else None
+        # Phase 10 correction linkage -- "supersedes" is a stored FK,
+        # "superseded_by" is deliberately derived with the reverse query
+        # rather than a second hand-maintained column (see
+        # grn_receipts.supersedes_grn_id in schema_postgres.sql).
+        grn_dict["supersedes_grn_number"] = None
+        if grn["supersedes_grn_id"]:
+            old = conn.execute(
+                "SELECT grn_number FROM grn_receipts WHERE grn_id = ?", (grn["supersedes_grn_id"],)
+            ).fetchone()
+            grn_dict["supersedes_grn_number"] = old["grn_number"] if old else None
+        superseding = conn.execute(
+            "SELECT grn_number FROM grn_receipts WHERE supersedes_grn_id = ?", (grn["grn_id"],)
+        ).fetchone()
+        grn_dict["superseded_by_grn_number"] = superseding["grn_number"] if superseding else None
         grn_dict["line_items"] = [
             dict(r) for r in conn.execute(
-                "SELECT * FROM grn_line_items WHERE grn_number = ? ORDER BY sku_code", (grn_number,)
+                "SELECT * FROM grn_line_items WHERE grn_id = ? ORDER BY sku_code", (grn_id,)
             ).fetchall()
         ]
-        grn_dict["movements"] = [
-            dict(r) for r in conn.execute(
-                """
+        if grn["po_id"] is not None:
+            # Canonical -- scoped via source_grn_line_item_id ->
+            # grn_line_items.grn_id, never plain reference_id text,
+            # which a superseded ancestor/descendant sharing this
+            # grn_number could also match (Phase 10).
+            movements_query = """
+                SELECT m.*, lf.name AS from_name, lt.name AS to_name
+                FROM inventory_movements m
+                LEFT JOIN locations lf ON lf.id = m.location_from_id
+                LEFT JOIN locations lt ON lt.id = m.location_to_id
+                WHERE m.reference_type = 'grn' AND m.source_grn_line_item_id IN (
+                    SELECT id FROM grn_line_items WHERE grn_id = ?
+                )
+                ORDER BY m.id
+            """
+            movements_param = grn_id
+        else:
+            # Legacy PDF GRN -- never part of a supersede chain, so
+            # reference_id text matching is unambiguous exactly as
+            # before Phase 10.
+            movements_query = """
                 SELECT m.*, lf.name AS from_name, lt.name AS to_name
                 FROM inventory_movements m
                 LEFT JOIN locations lf ON lf.id = m.location_from_id
                 LEFT JOIN locations lt ON lt.id = m.location_to_id
                 WHERE m.reference_type = 'grn' AND m.reference_id = ?
                 ORDER BY m.id
-                """,
-                (grn_number,),
-            ).fetchall()
-        ]
+            """
+            movements_param = grn_number
+        grn_dict["movements"] = [dict(r) for r in conn.execute(movements_query, (movements_param,)).fetchall()]
         result["grns"].append(grn_dict)
 
     doc_ids = set()

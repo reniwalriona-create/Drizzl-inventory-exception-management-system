@@ -24,7 +24,7 @@ authoritative there: sku_code is derived fresh from master_products.
 barcode inside those functions, never trusted from a value passed here.
 """
 import reconcile
-from ingest import record_inventory_flag, record_movement
+from ingest import record_inventory_flag, record_movement, void_grn
 
 
 class PostingError(Exception):
@@ -33,6 +33,16 @@ class PostingError(Exception):
     record's posted_grn_id points at an official GRN that no longer
     exists) -- never for an ordinary 'this GRN isn't ready' business
     outcome, which comes back in post_staged_grns()'s `rejected` list."""
+
+
+class CorrectionError(Exception):
+    """Phase 10: raised by replace_posted_grn() for a malformed
+    correction request or a data-integrity mismatch (the staged/official
+    GRN pair doesn't actually correspond, or the official GRN being
+    replaced isn't the PO's currently active one) -- never for an
+    ordinary 'this corrected GRN isn't ready to post' outcome, which
+    raises a plain ValueError listing every reason instead (mirrors
+    post_staged_grns()'s rejected-vs-PostingError split)."""
 
 
 def _load_selection(conn, batch_id, staged_grn_ids):
@@ -94,17 +104,73 @@ def _staged_lines(conn, staged_grn_id):
     ).fetchall()
 
 
-def _readiness_failures(conn, staged_grn, lines, po_by_id):
+def _readiness_failures(conn, staged_grn, lines, po_by_id, expect_replacing_grn_id=None):
     """Independently reconstructs whether this staged GRN is safe to
     post, ignoring whatever the browser/UI claims -- re-derives every
     condition from current database state, never trusting the stored
-    VERIFIED badge."""
+    VERIFIED badge.
+
+    expect_replacing_grn_id (Phase 10, default None): the ONE relaxation
+    replace_posted_grn() is allowed to make to normal readiness. When
+    set, a po_verification_status of 'blocked' is tolerated IF its only
+    error(s) are official_grn_already_exists (required) and,
+    optionally, duplicate_grn_in_other_batch -- and both conditions
+    below hold:
+      - official_grn_already_exists refers to exactly
+        expect_replacing_grn_id (same grn_number + customer_id).
+      - if duplicate_grn_in_other_batch is present too (it always will
+        be in practice: the original upload that produced the GRN being
+        replaced is itself "another batch" with the same grn_number,
+        and staging rows are never deleted -- see grn_csv_staging.
+        validate_staged_grn()), every OTHER staged_grns row sharing this
+        grn_number is either this correction's own already-posted origin
+        (posted_grn_id == expect_replacing_grn_id) or itself. A
+        genuinely separate THIRD staged candidate for the same
+        grn_number still blocks, unchanged -- that's real ambiguity,
+        not the expected correction shape.
+    Any other blocking reason (mismatched PO, over-received, unresolved
+    product, missing event date, etc.) still fails readiness exactly as
+    normal posting would; this never weakens any other rule."""
     reasons = []
 
     if staged_grn["validation_status"] == "blocked":
         reasons.append("staging validation is blocked (unresolved data/normalization problem).")
+
     if staged_grn["po_verification_status"] != "verified":
-        reasons.append("PO verification is not currently 'verified'.")
+        allowed = False
+        if expect_replacing_grn_id is not None and staged_grn["po_verification_status"] == "blocked":
+            errors = staged_grn["po_verification_errors"] or []
+            codes = {e["code"] for e in errors}
+            # duplicate_grn_in_other_batch is expected noise during a
+            # correction -- the original staged GRN that produced the
+            # official GRN being replaced always lives in a different
+            # batch and always shares this external_grn_number, so it
+            # always trips this finding too. It says nothing about
+            # whether THIS staged candidate is safe to post as the
+            # replacement; the actual safety guarantee (that old_grn_id
+            # really is the PO's currently active GRN, and that a
+            # concurrent replacement attempt can't also win) comes from
+            # replace_posted_grn()'s own row locks, not from this
+            # staging-time heuristic -- so it's always tolerated
+            # alongside official_grn_already_exists, regardless of how
+            # many OTHER staged siblings exist or their own posted
+            # state (a second, still-unposted correction candidate
+            # racing this one must not block either from being
+            # attempted).
+            allowed_codes = {"official_grn_already_exists", "duplicate_grn_in_other_batch"}
+            if codes and codes <= allowed_codes and "official_grn_already_exists" in codes:
+                # AND voided = 0 -- the conflict this correction is
+                # allowed to override is with the CURRENTLY ACTIVE GRN
+                # under this number, never a historical (already
+                # superseded) one that happens to share it.
+                conflicting = conn.execute(
+                    "SELECT grn_id FROM grn_receipts WHERE grn_number = ? AND customer_id = ? AND voided = 0",
+                    (staged_grn["external_grn_number"], staged_grn["customer_id"]),
+                ).fetchone()
+                allowed = conflicting is not None and conflicting["grn_id"] == expect_replacing_grn_id
+        if not allowed:
+            reasons.append("PO verification is not currently 'verified'.")
+
     if not staged_grn["external_grn_number"]:
         reasons.append("it has no external GRN number.")
     if not staged_grn["external_po_number"]:
@@ -150,8 +216,11 @@ def _conflict_failures(conn, staged_grn, po_by_id, po_ids_targeted_this_request)
     protects against a DIFFERENT concurrent request, not two entries
     within this one."""
     reasons = []
+    # AND voided = 0 -- a historical (already voided/superseded) GRN
+    # sharing this grn_number no longer blocks a fresh posting attempt
+    # (Phase 10's whole point); only a currently ACTIVE conflict does.
     existing = conn.execute(
-        "SELECT grn_id, customer_id FROM grn_receipts WHERE grn_number = ?",
+        "SELECT grn_id, customer_id FROM grn_receipts WHERE grn_number = ? AND voided = 0",
         (staged_grn["external_grn_number"],),
     ).fetchone()
     if existing is not None:
@@ -187,7 +256,12 @@ def _conflict_failures(conn, staged_grn, po_by_id, po_ids_targeted_this_request)
     return reasons
 
 
-def _insert_official_grn(conn, staged_grn, lines, po):
+def _insert_official_grn(conn, staged_grn, lines, po, supersedes_grn_id=None):
+    """supersedes_grn_id (Phase 10, default None): set only by
+    replace_posted_grn() when this INSERT is the corrected replacement
+    for an already-voided official GRN -- see grn_receipts.
+    supersedes_grn_id in schema_postgres.sql. Every other caller
+    (post_staged_grns(), normal first-time posting) leaves it None."""
     movement_date = staged_grn["external_created_at"]
     movement_date_str = movement_date.date().isoformat() if hasattr(movement_date, "date") else str(movement_date)
 
@@ -197,8 +271,8 @@ def _insert_official_grn(conn, staged_grn, lines, po):
         INSERT INTO grn_receipts
             (grn_number, po_number, po_id, customer_id, invoice_no, invoice_date,
              create_date, vendor_name, facility_name, supplier_code, dn_number,
-             source, source_file, source_location_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv', ?, ?)
+             source, source_file, source_location_id, supersedes_grn_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv', ?, ?, ?)
         RETURNING grn_id
         """,
         (
@@ -208,6 +282,7 @@ def _insert_official_grn(conn, staged_grn, lines, po):
             movement_date.isoformat() if movement_date else None,
             staged_grn["vendor_name"], staged_grn["facility_name"], staged_grn["supplier_code"],
             staged_grn["dn_number"], staged_grn["batch_source_filename"], po["source_location_id"],
+            supersedes_grn_id,
         ),
     ).fetchone()
     grn_id = grn_row["grn_id"]
@@ -220,14 +295,14 @@ def _insert_official_grn(conn, staged_grn, lines, po):
         line_row = conn.execute(
             """
             INSERT INTO grn_line_items
-                (grn_number, sku_code, sku_desc, lot_mrp, lot_expiry_date, received_qty,
+                (grn_number, grn_id, sku_code, sku_desc, lot_mrp, lot_expiry_date, received_qty,
                  taxable_value, total, product_id, external_sku, external_sku_description,
                  source_dn_quantity, source_dn_value)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
-                grn_number, line["external_sku"], line["external_sku_description"],
+                grn_number, grn_id, line["external_sku"], line["external_sku_description"],
                 line["lot_mrp"], line["lot_expiry_date"].isoformat() if line["lot_expiry_date"] else None,
                 line["received_qty"], line["grn_line_value_without_tax"], line["total_amount"],
                 line["product_id"], line["external_sku"], line["external_sku_description"],
@@ -338,3 +413,145 @@ def post_staged_grns(conn, batch_id, staged_grn_ids):
         for g in already_posted
     ]
     return {"posted": posted, "already_posted": already_posted_out, "rejected": {}}
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: corrected-GRN replacement.
+#
+# Once posted, an official GRN is never edited/deleted in place -- a
+# correction is always "void old + post replacement", atomically, with a
+# durable link (grn_receipts.supersedes_grn_id) between the two. This is
+# NOT automatic: the operator must explicitly choose a specific staged
+# GRN as the replacement for a specific official GRN (never inferred
+# from filename/timestamp/GRN number alone).
+# ---------------------------------------------------------------------------
+
+
+def find_correction_target(conn, staged_grn_id):
+    """The currently-active official GRN a not-yet-posted staged GRN
+    collides with (same customer + same external grn_number) -- what the
+    UI uses to decide whether to offer the Correct/Replace action on a
+    QUARANTINED staged GRN (staged_grn_detail.html). None if there's no
+    such collision (nothing to correct), the staged GRN has already been
+    posted itself, or the conflicting official GRN is already voided
+    (nothing currently active to replace)."""
+    staged_grn = conn.execute(
+        "SELECT customer_id, external_grn_number, posted_grn_id FROM staged_grns WHERE staged_grn_id = ?",
+        (staged_grn_id,),
+    ).fetchone()
+    if staged_grn is None or staged_grn["posted_grn_id"] is not None or not staged_grn["external_grn_number"]:
+        return None
+    return conn.execute(
+        "SELECT * FROM grn_receipts WHERE grn_number = ? AND customer_id = ? AND voided = 0",
+        (staged_grn["external_grn_number"], staged_grn["customer_id"]),
+    ).fetchone()
+
+
+def replace_posted_grn(conn, old_grn_id, corrected_staged_grn_id, reason):
+    """Atomically replaces an already-posted official GRN with a
+    corrected one from a re-uploaded, re-staged CSV (Phase 10). Never
+    edits/deletes the original: voids old_grn_id (which also voids its
+    SALE movement(s) and resolves any inventory_flags tied to them --
+    see ingest.void_grn()), then posts corrected_staged_grn_id fresh
+    through the SAME canonical posting path normal posting uses
+    (_insert_official_grn()), linking the new official GRN back to the
+    old one via grn_receipts.supersedes_grn_id. Both effects happen in
+    ONE transaction the caller commits/rolls back -- if anything here
+    raises, nothing written by this call persists once the caller rolls
+    back (no partial correction is possible).
+
+    Requires an explicit, non-empty reason -- never inferred from
+    filename/timestamp/GRN number. Requires the corrected staged GRN to
+    still pass every normal Phase 8 readiness rule except the one
+    specific conflict this workflow exists to resolve (see
+    _readiness_failures()'s expect_replacing_grn_id parameter) -- every
+    other rule (PO exists/not voided/has source, product identity valid,
+    quantities not over ordered, event date available, etc.) is
+    unchanged.
+
+    Row-locks, in this exact order, so two concurrent replacement
+    attempts against the same GRN/PO can't both succeed: the old
+    official GRN, the corrected staged GRN, then the official PO. A
+    second call for the same old_grn_id blocks on the first lock until
+    the first call's transaction ends, then fails cleanly (old_grn_id is
+    no longer the PO's active GRN, or is already voided).
+
+    Returns {"grn_id": <new official grn_id>, "grn_number": ...} on
+    success. Raises CorrectionError for a malformed request or a
+    data-integrity mismatch (the staged/official pair doesn't actually
+    correspond, or old_grn_id isn't the PO's currently active GRN), or a
+    plain ValueError listing every readiness reason if the corrected
+    staged GRN isn't actually ready to post. Caller owns commit/rollback
+    -- no hidden commits."""
+    if not reason or not reason.strip():
+        raise CorrectionError("Replacing a GRN needs a correction reason.")
+
+    old_grn = conn.execute(
+        "SELECT * FROM grn_receipts WHERE grn_id = ? FOR UPDATE", (old_grn_id,)
+    ).fetchone()
+    if old_grn is None:
+        raise CorrectionError(f"Official GRN id {old_grn_id} does not exist.")
+    if old_grn["voided"]:
+        raise CorrectionError(f"GRN {old_grn['grn_number']} is already voided -- nothing active to replace.")
+
+    staged_grn = conn.execute(
+        """
+        SELECT g.*, b.source_filename AS batch_source_filename
+        FROM staged_grns g
+        JOIN grn_import_batches b ON b.batch_id = g.batch_id
+        WHERE g.staged_grn_id = ?
+        FOR UPDATE OF g
+        """,
+        (corrected_staged_grn_id,),
+    ).fetchone()
+    if staged_grn is None:
+        raise CorrectionError(f"Staged GRN id {corrected_staged_grn_id} does not exist.")
+    if staged_grn["posted_grn_id"] is not None:
+        raise CorrectionError(
+            f"Staged GRN {corrected_staged_grn_id} has already been posted (as official GRN "
+            f"{staged_grn['posted_grn_id']}) -- it can't also replace another GRN."
+        )
+    if staged_grn["customer_id"] != old_grn["customer_id"] or staged_grn["external_grn_number"] != old_grn["grn_number"]:
+        raise CorrectionError(
+            f"Staged GRN {corrected_staged_grn_id} (customer {staged_grn['customer_id']}, GRN "
+            f"{staged_grn['external_grn_number']!r}) does not match official GRN {old_grn_id} (customer "
+            f"{old_grn['customer_id']}, GRN {old_grn['grn_number']!r}) -- refusing to treat these as a "
+            "correction pair."
+        )
+
+    po_id = staged_grn["official_po_id"]
+    if po_id is None or old_grn["po_id"] != po_id:
+        # Legacy GRNs (ingest.upsert_grn(), the PDF path) never set
+        # grn_receipts.po_id -- Phase 10 correction only covers canonical
+        # (CSV-posted) GRNs, so an old_grn without a matching po_id can
+        # never be a valid replacement target here.
+        raise CorrectionError(
+            f"Official GRN {old_grn_id} and staged GRN {corrected_staged_grn_id} are not matched to the same "
+            "official PO (or the official GRN has no canonical PO linkage) -- refusing to replace."
+        )
+
+    po_by_id = _lock_purchase_orders(conn, [po_id])
+    po = po_by_id.get(po_id)
+    if po is None:
+        raise CorrectionError(f"Official PO id {po_id} no longer exists.")
+
+    active = conn.execute(
+        "SELECT grn_id FROM grn_receipts WHERE po_id = ? AND voided = 0", (po_id,)
+    ).fetchone()
+    if active is None or active["grn_id"] != old_grn_id:
+        raise CorrectionError(
+            f"Official GRN {old_grn_id} is not the currently active GRN for PO {po['po_number']} -- refusing "
+            "to replace a GRN that isn't the one actually in effect."
+        )
+
+    lines = _staged_lines(conn, corrected_staged_grn_id)
+    reasons = _readiness_failures(conn, staged_grn, lines, po_by_id, expect_replacing_grn_id=old_grn_id)
+    if reasons:
+        raise ValueError(
+            f"Corrected staged GRN {corrected_staged_grn_id} is not ready to post: " + "; ".join(reasons)
+        )
+
+    void_grn(conn, old_grn["grn_number"], reason)
+    new_grn_id = _insert_official_grn(conn, dict(staged_grn), lines, po, supersedes_grn_id=old_grn_id)
+
+    return {"grn_id": new_grn_id, "grn_number": staged_grn["external_grn_number"]}

@@ -85,17 +85,6 @@ def _ensure_po_stub(conn, po_number, customer_id=None):
     )
 
 
-def _ensure_grn_stub(conn, grn_number, customer_id=None):
-    """Discrepancy Notes reference a GRN that may not have been uploaded
-    yet (or may never be, if only the CSV export covers it)."""
-    if not grn_number:
-        return
-    conn.execute(
-        "INSERT INTO grn_receipts (grn_number, customer_id) VALUES (?, ?) ON CONFLICT (grn_number) DO NOTHING",
-        (grn_number, customer_id),
-    )
-
-
 def clear_movements_for_reference(conn, reference_type, reference_id):
     conn.execute(
         "DELETE FROM inventory_movements WHERE reference_type = ? AND reference_id = ?",
@@ -125,19 +114,53 @@ def void_grn(conn, grn_number, reason):
     void. Nothing is deleted -- the GRN, its line items, and its
     movements all stay in the database, just excluded from every
     calculation (see reconcile.py's voided=0 filters) until restored
-    (unvoid_grn(), reverses this exactly)."""
-    row = conn.execute("SELECT grn_number FROM grn_receipts WHERE grn_number = ?", (grn_number,)).fetchone()
+    (unvoid_grn(), reverses this exactly).
+
+    Phase 10: also resolves any still-open inventory_flags tied to the
+    movement(s) just voided -- an unresolved negative-inventory flag
+    must not keep pretending a now-dead movement is an active problem.
+    The flag row itself is never deleted (see reconcile.
+    unresolved_inventory_flags()); this is the same 'resolved=1, keep
+    for audit' treatment a human clicking Resolve already applies, just
+    triggered automatically by the movement dying underneath it. This is
+    what makes replace_posted_grn() (grn_posting.py) safe to build on
+    top of this function without any extra flag-handling of its own.
+
+    Phase 10: targets ONLY the currently ACTIVE (voided = 0) row for
+    this grn_number. Since a superseded predecessor can share the same
+    grn_number with its active replacement (see grn_receipts.
+    supersedes_grn_id / the partial unique index on grn_number), a bare
+    grn_number match with no voided filter could otherwise silently
+    rewrite an already-voided historical row's void_reason/voided_at --
+    exactly the kind of "quietly overwrite old history" this whole
+    void/restore architecture exists to prevent."""
+    row = conn.execute(
+        "SELECT grn_number FROM grn_receipts WHERE grn_number = ? AND voided = 0", (grn_number,)
+    ).fetchone()
     if row is None:
-        raise ValueError("GRN not found.")
+        raise ValueError("GRN not found (or has no currently active record under this number).")
     conn.execute(
-        "UPDATE grn_receipts SET voided = 1, void_reason = ?, voided_at = CURRENT_TIMESTAMP WHERE grn_number = ?",
+        "UPDATE grn_receipts SET voided = 1, void_reason = ?, voided_at = CURRENT_TIMESTAMP "
+        "WHERE grn_number = ? AND voided = 0",
         (reason, grn_number),
     )
+    voided_movement_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM inventory_movements WHERE reference_type = 'grn' AND reference_id = ? AND voided = 0",
+            (grn_number,),
+        ).fetchall()
+    ]
     conn.execute(
         "UPDATE inventory_movements SET voided = 1, void_reason = ?, voided_at = CURRENT_TIMESTAMP "
-        "WHERE reference_type = 'grn' AND reference_id = ?",
+        "WHERE reference_type = 'grn' AND reference_id = ? AND voided = 0",
         (reason, grn_number),
     )
+    if voided_movement_ids:
+        placeholders = ",".join(["?"] * len(voided_movement_ids))
+        conn.execute(
+            f"UPDATE inventory_flags SET resolved = 1 WHERE resolved = 0 AND movement_id IN ({placeholders})",
+            tuple(voided_movement_ids),
+        )
 
 
 def void_movement(conn, movement_id, reason):
@@ -176,23 +199,105 @@ def unvoid_po(conn, po_number):
     )
 
 
-def unvoid_grn(conn, grn_number):
+def unvoid_grn(conn, grn_id):
     """Restores a mistakenly-voided GRN, and un-voids its sale
     movement(s) along with it -- the exact reverse of void_grn(). Safe
     to blanket-restore every movement referencing this GRN: a
     GRN-sourced movement can only ever have been voided as part of
     voiding this same GRN (void_movement() refuses to void a non-manual
     movement directly), so there's no risk of un-voiding something that
-    was independently voided for a different reason."""
+    was independently voided for a different reason.
+
+    Phase 10: takes grn_id (the real, unambiguous identity), NOT
+    grn_number -- a voided GRN's grn_number is no longer guaranteed
+    unique on its own (a superseded predecessor and its active
+    replacement, or a whole chain of corrections, can share one; see
+    grn_receipts.supersedes_grn_id / the partial unique index on
+    grn_number). Two required safety properties:
+    - Refuses to restore a GRN whose PO already has a DIFFERENT active
+      official GRN right now (checked directly against purchase_orders/
+      grn_receipts current state, not by walking the supersedes_grn_id
+      chain -- robust to any chain length: A superseded by B superseded
+      by C, restoring A must still be refused even though nothing
+      directly supersedes A anymore, since C is what's actually active).
+      Restoring it would create two active receipt outcomes for the
+      same PO, silently double-counting inventory. Only applies to
+      canonical (po_id-linked) GRNs -- a legacy PDF GRN is never part of
+      a supersede chain (replace_posted_grn() only ever touches
+      canonical GRNs), so this check is a no-op for it.
+    - After restoring, verifies the invariant this whole function exists
+      to preserve -- active official GRN <-> its canonical
+      (product_id-identified) received_qty>0 SALE movements are active,
+      linked via source_grn_line_item_id -> grn_line_items.grn_id (never
+      grn_number text, which a superseded ancestor/descendant can
+      share). A mismatch means movement state has drifted out of sync
+      with the GRN in some way this function doesn't understand; it
+      raises rather than leaving the ledger silently inconsistent (this
+      never triggers in the normal void_grn()/unvoid_grn() round trip,
+      since both always move the whole movement set together)."""
+    row = conn.execute("SELECT grn_id, grn_number, po_id FROM grn_receipts WHERE grn_id = ?", (grn_id,)).fetchone()
+    if row is None:
+        raise ValueError("GRN not found.")
+
+    if row["po_id"] is not None:
+        active = conn.execute(
+            "SELECT grn_id, grn_number FROM grn_receipts WHERE po_id = ? AND voided = 0", (row["po_id"],)
+        ).fetchone()
+        if active is not None and active["grn_id"] != grn_id:
+            raise ValueError(
+                f"GRN {row['grn_number']} (grn_id {grn_id}) can't be restored -- its PO already has a "
+                f"different active official GRN right now ({active['grn_number']}, grn_id {active['grn_id']}). "
+                "Restoring this one would create two active receipt outcomes for the same PO. If a correction "
+                "in this chain was itself wrong, correct/replace the currently active GRN instead."
+            )
+
     conn.execute(
-        "UPDATE grn_receipts SET voided = 0, void_reason = NULL, voided_at = NULL WHERE grn_number = ?",
-        (grn_number,),
+        "UPDATE grn_receipts SET voided = 0, void_reason = NULL, voided_at = NULL WHERE grn_id = ?",
+        (grn_id,),
     )
-    conn.execute(
-        "UPDATE inventory_movements SET voided = 0, void_reason = NULL, voided_at = NULL "
-        "WHERE reference_type = 'grn' AND reference_id = ?",
-        (grn_number,),
-    )
+
+    if row["po_id"] is not None:
+        # Canonical -- disambiguate via source_grn_line_item_id ->
+        # grn_line_items.grn_id, never plain reference_id text, which a
+        # superseded ancestor/descendant sharing this grn_number could
+        # also match.
+        conn.execute(
+            """
+            UPDATE inventory_movements SET voided = 0, void_reason = NULL, voided_at = NULL
+            WHERE reference_type = 'grn' AND source_grn_line_item_id IN (
+                SELECT id FROM grn_line_items WHERE grn_id = ?
+            )
+            """,
+            (grn_id,),
+        )
+    else:
+        # Legacy PDF GRN -- never part of a supersede chain, so its
+        # grn_number is guaranteed not shared with any other row; plain
+        # reference_id text matching is safe exactly as it always was.
+        conn.execute(
+            "UPDATE inventory_movements SET voided = 0, void_reason = NULL, voided_at = NULL "
+            "WHERE reference_type = 'grn' AND reference_id = ?",
+            (row["grn_number"],),
+        )
+
+    unlinked = conn.execute(
+        """
+        SELECT gli.id FROM grn_line_items gli
+        WHERE gli.grn_id = ? AND gli.product_id IS NOT NULL
+          AND gli.received_qty IS NOT NULL AND gli.received_qty > 0
+          AND NOT EXISTS (
+              SELECT 1 FROM inventory_movements m
+              WHERE m.source_grn_line_item_id = gli.id AND m.voided = 0
+          )
+        """,
+        (grn_id,),
+    ).fetchall()
+    if unlinked:
+        raise ValueError(
+            f"Integrity error restoring GRN {row['grn_number']} (grn_id {grn_id}): line item(s) "
+            f"{[r['id'] for r in unlinked]} have no active SALE movement after restore -- refusing to leave "
+            "the ledger silently inconsistent."
+        )
 
 
 def unvoid_movement(conn, movement_id):
@@ -217,17 +322,89 @@ def assign_po_source_location(conn, po_number, location_name, location_type="own
     calculation for this PO's lines (reconcile.committed_quantity()) and
     lets any of its GRNs create their sale movement -- so after setting
     it, back-fill any GRN sales that were pending on this PO having no
-    source location yet."""
+    source location yet.
+
+    Phase 10: FIRST-TIME assignment only. Once a source is already set,
+    this refuses to silently change it to a different location -- see
+    correct_po_source_location() for the explicit, audited, reason-
+    required way to change an already-assigned source. (Re-submitting
+    the SAME location is a harmless no-op, not an error, so a UI
+    accidentally resubmitting an unchanged form doesn't break.)"""
     location_id = _ensure_location(conn, location_name, location_type)
-    row = conn.execute("SELECT po_number FROM purchase_orders WHERE po_number = ?", (po_number,)).fetchone()
+    row = conn.execute(
+        "SELECT po_number, source_location_id FROM purchase_orders WHERE po_number = ?", (po_number,)
+    ).fetchone()
     if row is None:
         raise ValueError("PO not found.")
+    if row["source_location_id"] is not None and row["source_location_id"] != location_id:
+        raise ValueError(
+            f"PO {po_number} already has a source warehouse assigned -- use the Correct Source Warehouse "
+            "workflow to change it, so the change is audited with a reason."
+        )
     conn.execute(
         "UPDATE purchase_orders SET source_location_id = ? WHERE po_number = ?",
         (location_id, po_number),
     )
     for grn in conn.execute("SELECT grn_number FROM grn_receipts WHERE po_number = ? AND voided = 0", (po_number,)).fetchall():
         _create_pending_grn_sales(conn, grn["grn_number"])
+
+
+def correct_po_source_location(conn, po_number, new_location_name, reason, location_type="own_facility"):
+    """Explicit, audited correction of an ALREADY-assigned PO source
+    warehouse (Phase 10) -- the only way to change source_location_id
+    once assign_po_source_location() has set it once. See
+    PROJECT_HANDOFF.md.
+
+    Blocked entirely if the PO already has an active (non-voided)
+    official GRN, whether posted via the legacy PDF path (grn_receipts.
+    po_number) or the canonical CSV path (grn_receipts.po_id) -- that
+    GRN's SALE movement(s) were recorded from the OLD warehouse, and
+    correcting the PO's source alone would not move that history. The
+    GRN itself must be corrected/replaced (grn_posting.
+    replace_posted_grn()) instead, which re-posts the sale from
+    wherever the PO's source points to at that time. Never silently
+    moves historical inventory from one warehouse to another.
+
+    Every correction is logged to po_source_corrections (old source, new
+    source, reason, timestamp) -- never a silent overwrite. A reason is
+    required."""
+    if not reason or not reason.strip():
+        raise ValueError("Correcting the source warehouse needs a reason.")
+
+    po = conn.execute(
+        "SELECT po_id, po_number, source_location_id, voided FROM purchase_orders WHERE po_number = ?",
+        (po_number,),
+    ).fetchone()
+    if po is None:
+        raise ValueError("PO not found.")
+    if po["voided"]:
+        raise ValueError("This PO is voided -- restore it first if its source warehouse needs correcting.")
+
+    active_grn = conn.execute(
+        "SELECT grn_number FROM grn_receipts WHERE (po_id = ? OR po_number = ?) AND voided = 0",
+        (po["po_id"], po_number),
+    ).fetchone()
+    if active_grn is not None:
+        raise ValueError(
+            f"PO {po_number} already has an active official GRN ({active_grn['grn_number']}) -- its sale "
+            "movement(s) were recorded from the current source warehouse. Correct or replace that GRN "
+            "instead of changing the PO's source directly."
+        )
+
+    new_location_id = _ensure_location(conn, new_location_name, location_type)
+    old_location_id = po["source_location_id"]
+    if old_location_id == new_location_id:
+        raise ValueError("The new source warehouse is the same as the current one.")
+
+    conn.execute(
+        "INSERT INTO po_source_corrections (po_id, old_source_location_id, new_source_location_id, reason) "
+        "VALUES (?, ?, ?, ?)",
+        (po["po_id"], old_location_id, new_location_id, reason),
+    )
+    conn.execute(
+        "UPDATE purchase_orders SET source_location_id = ? WHERE po_number = ?",
+        (new_location_id, po_number),
+    )
 
 
 def assign_grn_source_location(conn, grn_number, location_name, location_type="own_facility"):
@@ -237,11 +414,13 @@ def assign_grn_source_location(conn, grn_number, location_name, location_type="o
     Also creates whichever of this GRN's sale movements were pending on
     a source location existing."""
     location_id = _ensure_location(conn, location_name, location_type)
-    row = conn.execute("SELECT grn_number FROM grn_receipts WHERE grn_number = ?", (grn_number,)).fetchone()
+    row = conn.execute(
+        "SELECT grn_number FROM grn_receipts WHERE grn_number = ? AND voided = 0", (grn_number,)
+    ).fetchone()
     if row is None:
-        raise ValueError("GRN not found.")
+        raise ValueError("GRN not found (or has no currently active record under this number).")
     conn.execute(
-        "UPDATE grn_receipts SET source_location_id = ? WHERE grn_number = ?",
+        "UPDATE grn_receipts SET source_location_id = ? WHERE grn_number = ? AND voided = 0",
         (location_id, grn_number),
     )
     _create_pending_grn_sales(conn, grn_number)
@@ -260,8 +439,12 @@ def _create_pending_grn_sales(conn, grn_number):
     if not source_location:
         return
 
+    # AND voided = 0 -- combined with the partial unique index on
+    # grn_receipts(grn_number) WHERE voided = 0 (Phase 10), at most one
+    # row can ever match this, even if a superseded predecessor shares
+    # the same grn_number.
     grn = conn.execute(
-        "SELECT grn_date FROM grn_receipts WHERE grn_number = ? AND voided = 0", (grn_number,)
+        "SELECT grn_id, grn_date FROM grn_receipts WHERE grn_number = ? AND voided = 0", (grn_number,)
     ).fetchone()
     if not grn:
         return
@@ -273,9 +456,12 @@ def _create_pending_grn_sales(conn, grn_number):
         ).fetchall()
     }
 
+    # Phase 10: filtered by grn_id, not grn_number -- a superseded
+    # predecessor can share this grn_number, and its line items must
+    # never leak into this active GRN's pending-sale computation.
     pending_lines = conn.execute(
-        "SELECT sku_code, received_qty FROM grn_line_items WHERE grn_number = ? AND received_qty IS NOT NULL AND received_qty != 0",
-        (grn_number,),
+        "SELECT sku_code, received_qty FROM grn_line_items WHERE grn_id = ? AND received_qty IS NOT NULL AND received_qty != 0",
+        (grn["grn_id"],),
     ).fetchall()
 
     for item in pending_lines:
@@ -468,7 +654,17 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
     it, same reasoning as upsert_po(). Its movements don't need a
     separate reset for this -- clear_movements_for_reference() below
     deletes the old (possibly voided) ones and the fresh INSERT creates
-    brand new rows, which default to voided=0 already."""
+    brand new rows, which default to voided=0 already.
+
+    Phase 10: the ON CONFLICT arbiter is (grn_number) WHERE voided = 0
+    -- matching grn_receipts_active_grn_number_key, the partial unique
+    index that replaced the old blanket-unique grn_number column. If
+    the only existing row for this grn_number is already voided (e.g.
+    it was superseded by a corrected replacement via grn_posting.
+    replace_posted_grn()), this INSERTs a fresh row instead of resurrecting/
+    mutating the voided one -- consistent with this whole phase's rule of
+    never editing an old record in place. If an ACTIVE row already
+    exists, this updates it in place exactly as before Phase 10."""
     grn_number = parsed["grn_number"]
     if not grn_number:
         raise ValueError("Parsed GRN has no grn_number, refusing to store it")
@@ -477,14 +673,14 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
     customer_id = _ensure_customer(conn, customer_name)
     _ensure_po_stub(conn, parsed.get("po_number"), customer_id)
 
-    conn.execute(
+    grn_row = conn.execute(
         """
         INSERT INTO grn_receipts
             (grn_number, po_number, customer_id, inbound_no, grn_date, create_date,
              invoice_no, invoice_date, challan_no, challan_date,
              vendor_name, facility_name, source, source_file)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(grn_number) DO UPDATE SET
+        ON CONFLICT(grn_number) WHERE voided = 0 DO UPDATE SET
             po_number=excluded.po_number,
             customer_id=excluded.customer_id,
             inbound_no=excluded.inbound_no,
@@ -499,6 +695,7 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
             source=excluded.source,
             source_file=excluded.source_file,
             voided=0, void_reason=NULL, voided_at=NULL
+        RETURNING grn_id
         """,
         (
             grn_number, parsed.get("po_number"), customer_id, parsed.get("inbound_no"),
@@ -507,9 +704,13 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
             parsed.get("challan_no"), parsed.get("challan_date"),
             parsed.get("vendor_name"), parsed.get("facility_name"), source, source_file,
         ),
-    )
+    ).fetchone()
+    grn_id = grn_row["grn_id"]
 
-    conn.execute("DELETE FROM grn_line_items WHERE grn_number = ?", (grn_number,))
+    # Phase 10: scoped by grn_id, not grn_number text -- a superseded
+    # predecessor sharing this grn_number must never have its history
+    # touched by a re-upload targeting the active row.
+    conn.execute("DELETE FROM grn_line_items WHERE grn_id = ?", (grn_id,))
     clear_movements_for_reference(conn, "grn", grn_number)
 
     for item in parsed.get("line_items", []):
@@ -517,14 +718,14 @@ def upsert_grn(conn, parsed, source="pdf", source_file=None, customer_name=DEFAU
         conn.execute(
             """
             INSERT INTO grn_line_items
-                (grn_number, sku_code, sku_desc, lot_no, lot_mrp,
+                (grn_number, grn_id, sku_code, sku_desc, lot_no, lot_mrp,
                  expected_qty, received_qty, unit_price, taxable_value,
                  cgst_rate, cgst_amt, sgst_rate, sgst_amt, igst_rate,
                  igst_amt, cess_rate, cess_amt, add_cess, total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                grn_number, sku_code, item.get("sku_desc"),
+                grn_number, grn_id, sku_code, item.get("sku_desc"),
                 item.get("lot_no"), item.get("lot_mrp"), item.get("expected_qty"),
                 item.get("received_qty"), item.get("unit_price"),
                 item.get("taxable_value"), item.get("cgst_rate"),

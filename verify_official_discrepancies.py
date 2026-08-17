@@ -113,9 +113,9 @@ def insert_official_grn(conn, grn_number, po_id, po_number, customer_id, lines, 
     ).fetchone()["grn_id"]
     for product_id, external_sku, received_qty, source_dn_quantity in lines:
         conn.execute(
-            "INSERT INTO grn_line_items (grn_number, sku_code, product_id, external_sku, received_qty, source_dn_quantity) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (grn_number, external_sku, product_id, external_sku, received_qty, source_dn_quantity),
+            "INSERT INTO grn_line_items (grn_number, grn_id, sku_code, product_id, external_sku, received_qty, source_dn_quantity) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (grn_number, grn_id, external_sku, product_id, external_sku, received_qty, source_dn_quantity),
         )
     return grn_id
 

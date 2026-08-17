@@ -248,7 +248,16 @@ CREATE INDEX idx_appointments_po_number ON appointments(po_number);
 -- until those child tables migrate to grn_id.
 CREATE TABLE grn_receipts (
     grn_id         BIGSERIAL PRIMARY KEY,
-    grn_number     TEXT NOT NULL UNIQUE,
+    -- Phase 10: NOT unique on its own -- see the partial unique index
+    -- below (grn_receipts_active_grn_number_key). A corrected
+    -- replacement legitimately shares its predecessor's grn_number
+    -- (same physical delivery, same Scootsy-issued number) while the
+    -- predecessor is voided; two simultaneously ACTIVE GRNs still can't
+    -- share one. grn_line_items no longer FKs to this column (it FKs to
+    -- grn_id instead, below) specifically because a plain/partial
+    -- unique index can't be an FK target and grn_number can no longer
+    -- promise table-wide uniqueness.
+    grn_number     TEXT NOT NULL,
     po_number      TEXT REFERENCES purchase_orders(po_number),
     -- Phase 8: the official PO this GRN was matched against at Phase 6/7
     -- verification time -- copied exactly from staged_grns.official_po_id
@@ -284,15 +293,42 @@ CREATE TABLE grn_receipts (
     voided         INTEGER NOT NULL DEFAULT 0,
     void_reason    TEXT,
     voided_at      TEXT,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text,
-    CONSTRAINT grn_receipts_customer_grn_number_key UNIQUE (customer_id, grn_number)
+    -- Phase 10: durable correction linkage -- set on the NEW official GRN
+    -- when it explicitly replaces an older one (ingest.py's void_grn() on
+    -- the old one runs in the same transaction as the INSERT that sets
+    -- this). "Superseded by" is never stored as its own column -- derive
+    -- it with `WHERE supersedes_grn_id = <this grn_id>` (see
+    -- grn_posting.find_correction_target()/reconcile.lookup_document()) --
+    -- a reverse query can't drift out of sync with itself the way a
+    -- second hand-maintained column could.
+    supersedes_grn_id BIGINT REFERENCES grn_receipts(grn_id),
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
+-- Unique among ACTIVE rows only (see the grn_number column comment
+-- above) -- a voided/superseded GRN and its active replacement can
+-- share a grn_number; a second simultaneously-active GRN with the same
+-- number cannot. Global, not per-customer -- same "temporary Phase 8
+-- compatibility scaffolding" scope as before Phase 10, just narrowed to
+-- active rows.
+CREATE UNIQUE INDEX grn_receipts_active_grn_number_key ON grn_receipts(grn_number) WHERE voided = 0;
+CREATE INDEX idx_grn_receipts_supersedes_grn_id ON grn_receipts(supersedes_grn_id);
 CREATE INDEX idx_grn_receipts_po_number ON grn_receipts(po_number);
 CREATE INDEX idx_grn_receipts_po_id ON grn_receipts(po_id);
 
 CREATE TABLE grn_line_items (
     id                SERIAL PRIMARY KEY,
-    grn_number        TEXT NOT NULL REFERENCES grn_receipts(grn_number),
+    -- Phase 10: the real FK is grn_id (below), not this column --
+    -- grn_number can no longer promise table-wide uniqueness (a
+    -- corrected replacement shares its predecessor's grn_number), so it
+    -- can't be an FK target any more. grn_number stays as a NOT NULL
+    -- plain text mirror purely for display/compatibility (matching
+    -- inventory_movements.reference_id's existing unenforced-text
+    -- pattern) -- every real lookup must join/filter on grn_id.
+    grn_number        TEXT NOT NULL,
+    -- No inline REFERENCES here -- grn_receipts.grn_id already exists
+    -- above in this file (grn_line_items is declared after it), so this
+    -- one doesn't need the deferred-FK pattern product_id below does.
+    grn_id            BIGINT NOT NULL REFERENCES grn_receipts(grn_id),
     sku_code          TEXT,
     sku_desc          TEXT,
     lot_no            TEXT,
@@ -338,7 +374,7 @@ CREATE TABLE grn_line_items (
     source_dn_quantity        NUMERIC,
     source_dn_value           NUMERIC
 );
-CREATE INDEX idx_grn_line_items_grn_number ON grn_line_items(grn_number);
+CREATE INDEX idx_grn_line_items_grn_id ON grn_line_items(grn_id);
 
 -- Deferred FK -- inventory_movements.source_grn_line_item_id (Phase 8) is
 -- declared earlier in this file, before grn_line_items exists yet.
@@ -435,6 +471,22 @@ CREATE TABLE activity_log (
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP::text
 );
 CREATE INDEX idx_activity_log_created_at ON activity_log(created_at);
+
+-- Phase 10: audit trail for correcting an already-assigned PO source
+-- warehouse (ingest.py's correct_po_source_location()). Every change is
+-- a durable, queryable row, never a silent overwrite of
+-- purchase_orders.source_location_id -- see PROJECT_HANDOFF.md. A
+-- reason is required at the application layer; NOT NULL here is the
+-- backstop.
+CREATE TABLE po_source_corrections (
+    id                      SERIAL PRIMARY KEY,
+    po_id                   BIGINT NOT NULL REFERENCES purchase_orders(po_id),
+    old_source_location_id  INTEGER REFERENCES locations(id),
+    new_source_location_id  INTEGER NOT NULL REFERENCES locations(id),
+    reason                  TEXT NOT NULL,
+    created_at              TEXT DEFAULT CURRENT_TIMESTAMP::text
+);
+CREATE INDEX idx_po_source_corrections_po_id ON po_source_corrections(po_id);
 
 CREATE TABLE debit_note_items (
     id          SERIAL PRIMARY KEY,

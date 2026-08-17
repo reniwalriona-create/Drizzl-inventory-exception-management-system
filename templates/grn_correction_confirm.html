@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Correct GRN {{ old_grn.grn_number }} - Drizzl Inventory{% endblock %}
+{% block content %}
+<p class="subtitle" style="margin-bottom:6px;"><a href="{{ url_for('staged_grn_detail', batch_id=batch_id, staged_grn_id=staged_grn_id) }}">&larr; Back to staged GRN</a></p>
+<h1>Correct / Replace GRN {{ old_grn.grn_number }}</h1>
+<p class="subtitle">Staged GRN {{ staged_grn_id }} (this batch's re-upload) has the same GRN number as an already-posted official GRN. This is never automatic -- review both sides below and explicitly confirm the replacement.</p>
+
+<div class="panel" style="border-color: var(--warn); background: var(--warn-bg);">
+  <p style="margin:0; color: var(--warn);"><strong>Replacing this GRN will void its current inventory movements and post the corrected GRN.</strong> The original GRN and its SALE movement(s) stay in the database as VOIDED/SUPERSEDED history -- nothing is deleted or edited in place.</p>
+</div>
+
+<div class="row">
+  <div class="panel" style="flex:1;">
+    <h2 style="margin-top:0;">Original posted GRN {{ old_grn.grn_number }} <span class="badge">grn_id {{ old_grn.grn_id }}</span></h2>
+    <table>
+      <tr><th>PO</th><td>{{ old_grn.po_number or "" }}</td></tr>
+      <tr><th>Source warehouse</th><td>{{ old_source_location or "Not resolved" }}</td></tr>
+      <tr><th>Invoice</th><td>{{ old_grn.invoice_no or "" }}</td></tr>
+    </table>
+    <h3>Received lines</h3>
+    {% if old_lines %}
+    <table>
+      <tr><th>SKU</th><th>Received</th></tr>
+      {% for li in old_lines %}
+      <tr><td>{{ li.sku_code }}</td><td>{{ "%.0f"|format(li.received_qty) if li.received_qty is not none else "" }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="empty">No line items.</p>
+    {% endif %}
+  </div>
+  <div class="panel" style="flex:1;">
+    <h2 style="margin-top:0;">Corrected staged GRN {{ staged_grn.external_grn_number }} <span class="badge">staged_grn_id {{ staged_grn_id }}</span></h2>
+    <table>
+      <tr><th>PO</th><td>{{ staged_grn.external_po_number or "" }}</td></tr>
+      <tr><th>Batch</th><td>{{ staged_grn.batch_id }}</td></tr>
+      <tr><th>Invoice</th><td>{{ staged_grn.invoice_number or "" }}</td></tr>
+    </table>
+    <h3>Normalized received lines</h3>
+    {% if staged_grn.lines %}
+    <table>
+      <tr><th>Customer SKU</th><th>Master Product</th><th>Received</th></tr>
+      {% for line in staged_grn.lines %}
+      <tr>
+        <td>{{ line.external_sku or "" }}</td>
+        <td>{{ line.master_product_name or "Unmapped" }}</td>
+        <td>{{ "%.0f"|format(line.received_qty) if line.received_qty is not none else "" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="empty">No normalized lines.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0;">PO vs corrected-GRN comparison</h2>
+  <p class="subtitle" style="margin:0 0 10px;">Computed Shortfall = PO Ordered &minus; corrected GRN Received. Shown for reference before you confirm -- this is the shortfall the corrected GRN will produce once posted.</p>
+  {% if comparison %}
+  <table>
+    <tr><th>Customer SKU</th><th>Master Product</th><th>PO Ordered</th><th>Received</th><th>Computed Shortfall</th><th>Status</th></tr>
+    {% for row in comparison %}
+    <tr>
+      <td>{{ row.external_sku or "" }}</td>
+      <td>{{ row.product_name or "" }}</td>
+      <td>{{ "%.0f"|format(row.ordered_qty) }}</td>
+      <td>{{ "%.0f"|format(row.received_qty) }}</td>
+      <td>{{ "%.0f"|format(row.computed_discrepancy_qty) }}</td>
+      <td>{{ row.quantity_status|upper }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">No comparison available yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <form method="post" onsubmit="return confirm('Replace GRN {{ old_grn.grn_number }}? This voids its current inventory movements and posts the corrected GRN in the same transaction.');">
+    <div class="field">
+      <label for="reason">Reason for this correction (required)</label>
+      <input type="text" name="reason" id="reason" placeholder="e.g. corrected received quantity, lot B was undercounted" required style="width:100%;">
+    </div>
+    <button type="submit" style="background: var(--warn);">Replace With Corrected GRN</button>
+  </form>
+</div>
+{% endblock %}

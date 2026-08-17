@@ -79,9 +79,13 @@
           <button type="submit" class="link">Restore</button>
         </form>
         {% elif v.type == "grn" %}
-        <form method="post" action="{{ url_for('restore_grn_route', grn_number=v.id) }}" style="margin:0;">
+        {% if v.superseded_by_grn_number %}
+        <span class="badge">SUPERSEDED by {{ v.superseded_by_grn_number }}</span>
+        {% else %}
+        <form method="post" action="{{ url_for('restore_grn_route', grn_id=v.id) }}" style="margin:0;">
           <button type="submit" class="link">Restore</button>
         </form>
+        {% endif %}
         {% elif v.type == "movement" %}
         <form method="post" action="{{ url_for('restore_movement_route', movement_id=v.id) }}" style="margin:0;">
           <button type="submit" class="link">Restore</button>
@@ -150,18 +154,19 @@
       <td>
         {% if po.source_location %}
         {{ po.source_location }}
+        <p class="subtitle" style="margin:2px 0 0;">To correct, open the PO on the Look up page.</p>
         {% else %}
         <span class="badge">Not allocated</span>
-        {% endif %}
         <form method="post" action="{{ url_for('assign_po_location_route', po_number=po.po_number) }}" style="margin:4px 0 0;">
           <select name="source_location" style="width:110px; display:inline-block; padding:4px 6px;">
-            <option value="">{{ "change to..." if po.source_location else "choose..." }}</option>
+            <option value="">choose...</option>
             {% for l in all_locations %}
             <option value="{{ l.name }}">{{ l.name }}</option>
             {% endfor %}
           </select>
           <button type="submit" class="link">Set</button>
         </form>
+        {% endif %}
       </td>
       <td><a href="{{ url_for('lookup', q=po.po_number) }}">View</a></td>
       <td>

@@ -52,18 +52,42 @@
     Expires: {{ result.po.po_expiry_date or "" }} &middot;
     Grand total: {{ result.po.grand_total if result.po.grand_total is not none else "" }}
   </p>
+  {% set active_grns = result.grns | selectattr('voided', 'equalto', 0) | list %}
   <p class="subtitle" style="margin:0 0 10px; display:flex; align-items:center; gap:10px;">
     Source location: {% if result.po.source_location %}<strong>{{ result.po.source_location }}</strong>{% else %}<span class="badge">Not allocated</span>{% endif %}
+    {% if not result.po.source_location %}
     <form method="post" action="{{ url_for('assign_po_location_route', po_number=result.po.po_number) }}" style="margin:0; display:inline-flex; gap:6px;">
       <select name="source_location" style="width:140px; padding:4px 6px;">
-        <option value="">{{ "change to..." if result.po.source_location else "choose..." }}</option>
+        <option value="">choose...</option>
         {% for l in all_locations %}
         <option value="{{ l.name }}">{{ l.name }}</option>
         {% endfor %}
       </select>
       <button type="submit" class="link">Set</button>
     </form>
+    {% elif active_grns %}
+    <span class="badge" style="background: var(--warn-bg); color: var(--warn);">Locked</span>
+    <span class="subtitle" style="margin:0;">GRN {{ active_grns[0].grn_number }} is posted against this PO -- correct/replace that GRN to change the effective warehouse, not the PO's source directly.</span>
+    {% endif %}
   </p>
+  {% if result.po.source_location and not active_grns %}
+  <form method="post" action="{{ url_for('correct_po_source_route', po_number=result.po.po_number) }}" class="row" style="align-items:flex-end; margin:0 0 10px;"
+        onsubmit="return confirm('Correct PO {{ result.po.po_number }}\'s source warehouse? This is logged with a reason, but does not exist yet as a real inventory movement to reverse.');">
+    <div class="field" style="margin-bottom:0;">
+      <label style="font-size:0.8rem;">Correct source warehouse to</label>
+      <select name="source_location" style="width:160px; padding:4px 6px;" required>
+        <option value="">choose a different warehouse...</option>
+        {% for l in all_locations %}
+        <option value="{{ l.name }}">{{ l.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field" style="margin-bottom:0;">
+      <input type="text" name="reason" placeholder="Reason for correction" required style="width:220px;">
+    </div>
+    <button type="submit" class="link">Correct Source Warehouse</button>
+  </form>
+  {% endif %}
   {% if result.po.line_items %}
   <table>
     <tr><th>SKU</th><th>Description</th><th>Qty</th><th>MRP</th><th>Total</th></tr>
@@ -109,11 +133,19 @@
 {% for grn in result.grns %}
 <div class="panel">
   <div class="row" style="justify-content:space-between; align-items:flex-start;">
-    <h2 style="margin-top:0;">GRN {{ grn.grn_number }}{% if grn.po_number %} <span class="badge">PO {{ grn.po_number }}</span>{% endif %}</h2>
+    <h2 style="margin-top:0;">
+      GRN {{ grn.grn_number }}{% if grn.po_number %} <span class="badge">PO {{ grn.po_number }}</span>{% endif %}
+      {% if grn.superseded_by_grn_number %}<span class="badge" style="background: var(--warn-bg); color: var(--warn);">SUPERSEDED</span>{% endif %}
+      {% if grn.supersedes_grn_number %}<span class="badge">SUPERSEDES GRN {{ grn.supersedes_grn_number }}</span>{% endif %}
+    </h2>
     {% if grn.voided %}
-    <form method="post" action="{{ url_for('restore_grn_route', grn_number=grn.grn_number) }}">
-      <button type="submit">Restore GRN</button>
-    </form>
+      {% if grn.superseded_by_grn_number %}
+      <span class="subtitle" style="margin:0;">Replaced by GRN {{ grn.superseded_by_grn_number }} -- historical, not restorable directly.</span>
+      {% else %}
+      <form method="post" action="{{ url_for('restore_grn_route', grn_id=grn.grn_id) }}">
+        <button type="submit">Restore GRN</button>
+      </form>
+      {% endif %}
     {% else %}
     <form method="post" action="{{ url_for('void_grn_route', grn_number=grn.grn_number) }}" class="row" style="align-items:flex-end;"
           onsubmit="return confirm('Void GRN {{ grn.grn_number }}? This also voids the sale movement(s) it created -- everything stays visible here, just excluded from every calculation, and restorable anytime.');">
@@ -126,6 +158,9 @@
   </div>
   {% if grn.voided %}
   <p class="flash flash-warning">VOIDED{% if grn.voided_at %} ({{ grn.voided_at }}){% endif %}: {{ grn.void_reason }}</p>
+  {% endif %}
+  {% if grn.supersedes_grn_number %}
+  <p class="subtitle" style="margin:0 0 10px;">This corrected GRN supersedes <a href="{{ url_for('lookup', q=grn.supersedes_grn_number) }}">GRN {{ grn.supersedes_grn_number }}</a> (voided).</p>
   {% endif %}
   <p class="subtitle" style="margin:0 0 10px;">
     GRN date: {{ grn.grn_date or "" }} &middot;
