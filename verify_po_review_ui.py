@@ -102,7 +102,26 @@ def cleanup_batch(conn, batch_id):
 
 def run():
     conn = get_connection()
+    # Phase 12: routes are now login-gated. CSRF is disabled for this
+    # same-process test harness (Flask-WTF's own documented testing
+    # guidance -- there's no cross-site attacker in a test_client() run;
+    # CSRF enforcement itself is verified separately in
+    # verify_security.py). A throwaway user is created directly (not via
+    # create_user.py, which prompts interactively) and logged in before
+    # any route below is exercised.
+    app.config["WTF_CSRF_ENABLED"] = False
+    app.config["TESTING"] = True
+    from werkzeug.security import generate_password_hash
+    conn.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?) ON CONFLICT (username) DO NOTHING",
+        ("verify_po_review_ui_bot", generate_password_hash("not-a-real-password")),
+    )
+    conn.commit()
     client = app.test_client()
+    login_resp = client.post("/login", data={"username": "verify_po_review_ui_bot", "password": "not-a-real-password"})
+    if login_resp.status_code not in (302, 303):
+        print(f"FATAL: test login failed (status {login_resp.status_code}) -- stopping rather than running unauthenticated.")
+        return False
     failures = []
     created_batch_ids = []
 
@@ -351,6 +370,8 @@ def run():
     if remaining != 0:
         failures.append(f"  {remaining} staging row(s) left behind after cleanup")
 
+    conn.execute("DELETE FROM users WHERE username = ?", ("verify_po_review_ui_bot",))
+    conn.commit()
     conn.close()
 
     if failures:

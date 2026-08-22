@@ -6,6 +6,7 @@
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
       <label for="file">Purchase Order CSV file</label>
       <input type="file" name="file" id="file" accept=".csv" required>

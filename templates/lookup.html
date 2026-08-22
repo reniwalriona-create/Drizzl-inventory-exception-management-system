@@ -30,11 +30,13 @@
     <h2 style="margin-top:0;">Purchase Order {{ result.po.po_number }}</h2>
     {% if result.po.voided %}
     <form method="post" action="{{ url_for('restore_po_route', po_number=result.po.po_number) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Restore PO</button>
     </form>
     {% else %}
     <form method="post" action="{{ url_for('void_po_route', po_number=result.po.po_number) }}" class="row" style="align-items:flex-end;"
           onsubmit="return confirm('Void PO {{ result.po.po_number }}? It stays visible here, just excluded from every calculation -- restorable anytime.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field" style="margin-bottom:0;">
         <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
       </div>
@@ -57,6 +59,7 @@
     Source location: {% if result.po.source_location %}<strong>{{ result.po.source_location }}</strong>{% else %}<span class="badge">Not allocated</span>{% endif %}
     {% if not result.po.source_location %}
     <form method="post" action="{{ url_for('assign_po_location_route', po_number=result.po.po_number) }}" style="margin:0; display:inline-flex; gap:6px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <select name="source_location" style="width:140px; padding:4px 6px;">
         <option value="">choose...</option>
         {% for l in all_locations %}
@@ -73,6 +76,7 @@
   {% if result.po.source_location and not active_grns %}
   <form method="post" action="{{ url_for('correct_po_source_route', po_number=result.po.po_number) }}" class="row" style="align-items:flex-end; margin:0 0 10px;"
         onsubmit="return confirm('Correct PO {{ result.po.po_number }}\'s source warehouse? This is logged with a reason, but does not exist yet as a real inventory movement to reverse.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field" style="margin-bottom:0;">
       <label style="font-size:0.8rem;">Correct source warehouse to</label>
       <select name="source_location" style="width:160px; padding:4px 6px;" required>
@@ -143,12 +147,14 @@
       <span class="subtitle" style="margin:0;">Replaced by GRN {{ grn.superseded_by_grn_number }} -- historical, not restorable directly.</span>
       {% else %}
       <form method="post" action="{{ url_for('restore_grn_route', grn_id=grn.grn_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">Restore GRN</button>
       </form>
       {% endif %}
     {% else %}
     <form method="post" action="{{ url_for('void_grn_route', grn_number=grn.grn_number) }}" class="row" style="align-items:flex-end;"
           onsubmit="return confirm('Void GRN {{ grn.grn_number }}? This also voids the sale movement(s) it created -- everything stays visible here, just excluded from every calculation, and restorable anytime.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field" style="margin-bottom:0;">
         <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
       </div>
@@ -176,6 +182,7 @@
     <span>-- no sale movement created yet for this GRN's received units.</span>
     {% endif %}
     <form method="post" action="{{ url_for('assign_grn_location_route', grn_number=grn.grn_number) }}" style="margin:0; display:inline-flex; gap:6px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <select name="source_location" style="width:140px; padding:4px 6px;">
         <option value="">{{ "override with..." if grn.source_location else "choose..." }}</option>
         {% for l in all_locations %}

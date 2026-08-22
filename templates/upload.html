@@ -6,6 +6,7 @@
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
       <label for="doc_type">Document type</label>
       <select name="doc_type" id="doc_type" required>

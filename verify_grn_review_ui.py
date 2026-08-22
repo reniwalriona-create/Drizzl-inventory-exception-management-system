@@ -5,10 +5,10 @@ through real Flask requests via app.test_client() (same as
 verify_po_review_ui.py).
 
 Runs entirely against a disposable throwaway Postgres database
-(drizzl_inventory_test_phase7) -- db.DB_NAME is monkeypatched for the
-duration of this script so that app.test_client()'s own route-driven
-connections transparently target the throwaway database too (db.py's
-get_connection() reads the module-level DB_NAME at call time, not at
+(drizzl_inventory_test_phase7) -- config.DATABASE_URL is monkeypatched
+for the duration of this script so that app.test_client()'s own
+route-driven connections transparently target the throwaway database too
+(db.py's get_connection() reads config.DATABASE_URL at call time, not at
 import time, so this is safe). The real drizzl_inventory database is
 never touched. Dropped at the end regardless of pass/fail.
 
@@ -25,8 +25,9 @@ import psycopg2
 
 TEST_DB_NAME = "drizzl_inventory_test_phase7"
 
+import config
+config.DATABASE_URL = f"dbname={TEST_DB_NAME}"  # must happen before `import app`
 import db as db_module
-db_module.DB_NAME = TEST_DB_NAME  # must happen before `import app`
 
 import grn_csv_staging as staging
 import po_csv_staging
@@ -176,8 +177,25 @@ def run():
 
     print(f"Creating throwaway database {TEST_DB_NAME}...")
     create_test_database()
-    conn = db_module.get_connection()  # bootstraps schema + seed, since DB_NAME is patched
+    conn = db_module.get_connection()  # bootstraps schema + seed, since DATABASE_URL is patched
+    # Phase 12: routes are now login-gated. CSRF is disabled for this
+    # same-process test harness (Flask-WTF's own documented testing
+    # guidance -- CSRF enforcement itself is verified separately in
+    # verify_security.py). The whole database is disposable and dropped
+    # at the end regardless, so the test user needs no explicit cleanup.
+    app.config["WTF_CSRF_ENABLED"] = False
+    app.config["TESTING"] = True
+    from werkzeug.security import generate_password_hash
+    conn.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        ("verify_bot", generate_password_hash("not-a-real-password")),
+    )
+    conn.commit()
     client = app.test_client()
+    login_resp = client.post("/login", data={"username": "verify_bot", "password": "not-a-real-password"})
+    if login_resp.status_code not in (302, 303):
+        print(f"FATAL: test login failed (status {login_resp.status_code}) -- stopping rather than running unauthenticated.")
+        return False
     ok = True
 
     try:

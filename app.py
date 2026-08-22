@@ -4,13 +4,26 @@ a dashboard built on reconcile.py's reports, and a manual movement form
 -- the only way to capture undocumented events (flea markets, transfers,
 production) that no document exists for.
 """
+import logging
 import os
 import secrets
 from pathlib import Path
 
-from flask import Flask, abort, flash, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
+)
+from flask_wtf import CSRFProtect
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
+import config
 import grn_csv_staging
 import grn_posting
 import po_csv_staging
@@ -48,8 +61,55 @@ from po_parser import parse_po_pdf
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger(__name__)
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-only-secret-change-before-deploy")
+# SECRET_KEY: config.py already refuses to start with APP_ENV=production
+# and no real SECRET_KEY set -- there is deliberately no insecure
+# fallback reachable in production here, only config's own clearly-
+# labeled dev-only default (Phase 12).
+app.secret_key = config.SECRET_KEY
+app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_BYTES
+
+# CSRF protection (Phase 12) -- Flask-WTF's standard app-wide guard.
+# Every POST/PUT/PATCH/DELETE request must carry a valid csrf_token
+# (every <form method="post"> in templates/ already includes one as a
+# hidden field). This is in addition to, never a replacement for,
+# server-side validation -- every route still re-checks its own
+# business rules regardless of whether the CSRF token was valid.
+csrf = CSRFProtect(app)
+
+# Authentication (Phase 12) -- minimal, single-role session login backed
+# by the users table (id/username/password_hash), which has existed
+# since Phase 1 specifically so this didn't need a schema change. No
+# self-registration, no password reset -- accounts are created out of
+# band with create_user.py (see README). Werkzeug's own password hashing
+# (already a dependency) is used for verification; plaintext passwords
+# are never stored or logged.
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+login_manager.login_message = "Please log in to continue."
+login_manager.login_message_category = "warning"
+
+
+class AppUser(UserMixin):
+    def __init__(self, row):
+        self.id = str(row["id"])
+        self.username = row["username"]
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
+        return AppUser(row) if row else None
+    finally:
+        conn.close()
 
 # (label, accepted file extension) -- drives both the upload form's
 # dropdown and which parser/ingest function handles the file.
@@ -113,6 +173,73 @@ def _build_chart_data(conn, location, sku_code, damaged_by_cause):
         "damage_cause": damage_cause_chart,
         "flavor_popularity": flavor_popularity_chart,
     }
+
+
+# Endpoints reachable without a session -- everything else is gated by
+# the before_request hook below. Fail-secure by default: a new route
+# added later is automatically protected unless explicitly listed here.
+_PUBLIC_ENDPOINTS = {"login", "health", "static"}
+
+
+@app.before_request
+def _require_login():
+    if request.endpoint in _PUBLIC_ENDPOINTS or request.endpoint is None:
+        return None
+    if not current_user.is_authenticated:
+        return login_manager.unauthorized()
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id, username, password_hash FROM users WHERE username = ?", (username,)
+            ).fetchone()
+        finally:
+            conn.close()
+        # Same generic message whether the username doesn't exist or the
+        # password is wrong -- never reveal which one it was.
+        if row is None or not check_password_hash(row["password_hash"], password):
+            flash("Invalid username or password.", "error")
+            return render_template("login.html"), 401
+        login_user(AppUser(row))
+        flash(f"Welcome back, {row['username']}.", "success")
+        next_url = request.args.get("next")
+        return redirect(next_url or url_for("dashboard"))
+    return render_template("login.html")
+
+
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    logout_user()
+    flash("Logged out.", "success")
+    return redirect(url_for("login"))
+
+
+@app.route("/health")
+def health():
+    """Liveness/readiness probe -- deliberately reveals nothing about
+    schema, configuration, or secrets, just whether the process is up
+    and can reach the database. No auth required (so a load balancer/
+    orchestrator can call it), but that's also why it must stay this
+    minimal."""
+    try:
+        conn = get_connection()
+        try:
+            conn.execute("SELECT 1")
+        finally:
+            conn.close()
+        return jsonify(status="ok"), 200
+    except Exception:
+        log.exception("Health check failed")
+        return jsonify(status="unavailable"), 503
 
 
 @app.route("/")
@@ -189,13 +316,23 @@ def upload():
             flash("Choose a file to upload.", "error")
             return redirect(url_for("upload"))
 
-        filename = secure_filename(file.filename)
+        original_name = secure_filename(file.filename)
         expected_ext = DOC_TYPES[doc_type][1]
-        if not filename.lower().endswith(expected_ext):
+        if not original_name.lower().endswith(expected_ext):
             flash(f"{DOC_TYPES[doc_type][0]} expects a {expected_ext} file.", "error")
             return redirect(url_for("upload"))
 
-        dest = UPLOAD_DIR / filename
+        # Collision-safe stored name (Phase 12) -- matches the pattern
+        # already used by the PO/GRN CSV upload routes below. Without
+        # the random prefix, two uploads sharing a filename (a very
+        # real scenario -- "GRN.pdf" is not an unusual name) would
+        # silently overwrite each other's saved file, destroying the
+        # earlier one's audit trail even though its database row lives
+        # on. original_name (not the randomized on-disk name) is what
+        # gets stored/shown as source_file, so audit visibility is
+        # unaffected.
+        stored_name = f"doc_{secrets.token_hex(8)}_{original_name}"
+        dest = UPLOAD_DIR / stored_name
         file.save(dest)
 
         conn = get_connection()
@@ -203,13 +340,13 @@ def upload():
             before = {r["id"] for r in conn.execute("SELECT id FROM ingestion_flags").fetchall()}
 
             if doc_type == "po":
-                result = upsert_po(conn, parse_po_pdf(str(dest)), source_file=filename)
+                result = upsert_po(conn, parse_po_pdf(str(dest)), source_file=original_name)
                 msg = f"Stored PO {result}."
-                log_activity(conn, "po_upload", f"Uploaded PO {result} ({filename})", "po", result)
+                log_activity(conn, "po_upload", f"Uploaded PO {result} ({original_name})", "po", result)
             elif doc_type == "grn":
-                result = upsert_grn(conn, parse_grn_pdf(str(dest)), source_file=filename)
+                result = upsert_grn(conn, parse_grn_pdf(str(dest)), source_file=original_name)
                 msg = f"Stored GRN {result}."
-                log_activity(conn, "grn_upload", f"Uploaded GRN {result} ({filename})", "grn", result)
+                log_activity(conn, "grn_upload", f"Uploaded GRN {result} ({original_name})", "grn", result)
 
             conn.commit()
             flash(msg, "success")
@@ -221,9 +358,14 @@ def upload():
             ).fetchall()
             for f in new_flags:
                 flash(f"Flagged for review: {f['issue']}", "warning")
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            flash(f"Failed to process {filename}: {e}", "error")
+            # Never echo the raw exception to the browser -- a parser
+            # failure can include fragments of file content or a
+            # traceback with filesystem paths. Full detail goes to the
+            # server log only (Phase 12).
+            log.exception("Unexpected error processing upload %s (doc_type=%s)", original_name, doc_type)
+            flash(f"Failed to process {original_name} -- an unexpected error occurred.", "error")
         finally:
             conn.close()
 
@@ -719,6 +861,7 @@ def po_import():
                 return redirect(url_for("po_import"))
             except Exception:
                 conn.rollback()
+                log.exception("Unexpected error importing PO CSV %s", original_name)
                 flash(f"Could not import {original_name} -- an unexpected error occurred.", "error")
                 return redirect(url_for("po_import"))
 
@@ -936,6 +1079,7 @@ def grn_import():
                 return redirect(url_for("grn_import"))
             except Exception:
                 conn.rollback()
+                log.exception("Unexpected error importing GRN CSV %s", original_name)
                 flash(f"Could not import {original_name} -- an unexpected error occurred.", "error")
                 return redirect(url_for("grn_import"))
 
@@ -1240,5 +1384,58 @@ def correct_po_source_route(po_number):
     return redirect(url_for("lookup", q=po_number))
 
 
+@app.errorhandler(404)
+def not_found(e):
+    return render_template("error.html", code=404, message="Page not found."), 404
+
+
+@app.errorhandler(403)
+def forbidden(e):
+    # CSRFProtect raises a 400 (CSRFError, a subclass of BadRequest) for
+    # a missing/invalid token, not 403 -- this handler covers explicit
+    # abort(403) calls elsewhere, kept for completeness/consistency.
+    return render_template("error.html", code=403, message="You don't have permission to do that."), 403
+
+
+@app.errorhandler(413)
+def too_large(e):
+    return render_template("error.html", code=413, message="That file is too large to upload."), 413
+
+
+@app.errorhandler(400)
+def bad_request(e):
+    # Covers Flask-WTF's CSRFError among other 400s -- never echoes the
+    # underlying reason (e.g. "The CSRF token has expired") verbatim to
+    # avoid hinting at exploitable detail; the generic message is enough
+    # for a real user (whose session just needs a page reload) and the
+    # server log has the specifics.
+    log.warning("400 Bad Request on %s: %s", request.path, e)
+    return render_template("error.html", code=400, message="That request could not be processed -- please try again."), 400
+
+
+@app.errorhandler(500)
+def server_error(e):
+    log.exception("Unhandled server error on %s", request.path)
+    return render_template("error.html", code=500, message="Something went wrong on our end."), 500
+
+
+@app.errorhandler(Exception)
+def unhandled_exception(e):
+    # Last-resort catch-all so an exception type nobody anticipated
+    # still renders the same no-detail-leaked error page instead of
+    # Flask's default (which, outside debug mode, is already generic,
+    # but this guarantees OUR page/logging, not a framework default
+    # that could change) and never the interactive debugger/traceback.
+    if isinstance(e, HTTPException):
+        return e
+    log.exception("Unhandled exception on %s", request.path)
+    return render_template("error.html", code=500, message="Something went wrong on our end."), 500
+
+
 if __name__ == "__main__":
-    app.run(debug=True, port=int(os.environ.get("PORT", 5001)))
+    # debug=True only outside production -- config.DEBUG is False
+    # whenever APP_ENV=production, so the interactive debugger and
+    # tracebacks can never reach a production browser through this
+    # entrypoint. For a real deployment, run behind gunicorn instead
+    # of python app.py -- see README ("Running the server").
+    app.run(debug=config.DEBUG, port=int(os.environ.get("PORT", 5001)))

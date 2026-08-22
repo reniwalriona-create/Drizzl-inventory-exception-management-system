@@ -6,6 +6,7 @@
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
       <label for="customer_id">Customer</label>
       <select name="customer_id" id="customer_id" required>

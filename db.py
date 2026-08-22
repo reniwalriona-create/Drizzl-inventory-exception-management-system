@@ -4,6 +4,16 @@ import psycopg2
 import psycopg2.extras
 from pathlib import Path
 
+import config
+
+# Phase 12: DATABASE_URL (a full libpq connection string/DSN, e.g.
+# "postgresql://user:pass@host:5432/dbname" or the local dev default
+# "dbname=drizzl_inventory") is now the single source of truth for which
+# database to connect to -- config.py resolves it from the environment,
+# with a local-dev fallback. DB_NAME stays exported for anything that
+# still wants just the database's short name (informational only, e.g.
+# db.py's own __main__ printout) -- it is never used to build the actual
+# connection anymore.
 DB_NAME = "drizzl_inventory"
 SCHEMA_PATH = Path(__file__).parent / "schema_postgres.sql"
 # Phase 1 catalog seed (master_products + customer_product_skus). Reuses
@@ -64,7 +74,19 @@ def _seed_catalog(conn):
 
 
 def get_connection():
-    raw_conn = psycopg2.connect(dbname=DB_NAME)
+    """Connects using config.DATABASE_URL (read at call time, not import
+    time, so tests can monkeypatch config.DATABASE_URL before the first
+    call and every connection -- including ones made from inside app.py's
+    own request handlers -- transparently targets a different database).
+
+    The auto-bootstrap below (create tables / seed reference data on a
+    genuinely empty database) is a local-dev convenience, not a
+    migration runner -- it only ever does a plain CREATE TABLE pass
+    against a database with no `customers` table yet, never an ALTER/DROP,
+    and becomes a pure no-op forever after the first real connection. In
+    production, provision the schema explicitly first (see README) so
+    this path is never exercised by a live request."""
+    raw_conn = psycopg2.connect(config.DATABASE_URL)
     conn = _PGConnection(raw_conn)
 
     tables_exist = conn.execute(

@@ -123,6 +123,7 @@
 <body>
   <header>
     <span class="brand">Drizzl Inventory</span>
+    {% if current_user.is_authenticated %}
     <nav>
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}">Dashboard</a>
       <a href="{{ url_for('visualizations') }}" class="{{ 'active' if request.endpoint == 'visualizations' }}">Visualizations</a>
@@ -133,6 +134,14 @@
       <a href="{{ url_for('lookup') }}" class="{{ 'active' if request.endpoint == 'lookup' }}">Look up PO/GRN/DN</a>
       <a href="{{ url_for('activity') }}" class="{{ 'active' if request.endpoint == 'activity' }}">Activity log</a>
     </nav>
+    <span style="margin-left:auto; display:flex; align-items:center; gap:12px; opacity:0.9; font-size:0.9rem;">
+      {{ current_user.username }}
+      <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="link" style="color:var(--accent-ink); opacity:0.9;">Log out</button>
+      </form>
+    </span>
+    {% endif %}
   </header>
   <main>
     {% with messages = get_flashed_messages(with_categories=true) %}

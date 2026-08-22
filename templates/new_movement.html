@@ -31,6 +31,7 @@
   <p class="subtitle">Physical inventory stays positive, but this location currently has less open-PO commitment than {{ "%.0f"|format(pending.committed) }} units reserved -- doing this movement means the business may not have enough stock left to fulfill that PO. This is a lighter warning than negative physical inventory. You can continue anyway -- the movement will be saved and the shortfall will be flagged on the dashboard until investigated.</p>
   {% endif %}
   <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="confirmed_override" value="1">
     <input type="hidden" name="severity" value="{{ pending.severity }}">
     <input type="hidden" name="movement_date" value="{{ pending.movement_date }}">
@@ -55,6 +56,7 @@
 {% else %}
 <div class="panel">
   <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="row">
       <div class="field">
         <label for="movement_date">Date</label>
@@ -186,12 +188,14 @@
         <span class="badge" title="{{ m.void_reason }}">VOIDED</span>
         {% if m.reference_type == "manual" %}
         <form method="post" action="{{ url_for('restore_movement_route', movement_id=m.id) }}" style="margin:4px 0 0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="link">Restore</button>
         </form>
         {% endif %}
         {% elif m.reference_type == "manual" %}
         <form method="post" action="{{ url_for('void_movement_route', movement_id=m.id) }}" style="margin:0;"
               onsubmit="return confirm('Void this {{ m.movement_type }} movement? It stays visible here, just excluded from every calculation -- restorable anytime.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="text" name="reason" placeholder="Reason" required style="width:100px; display:inline-block; padding:4px 6px; margin-bottom:4px;">
           <button type="submit" class="link">Void</button>
         </form>

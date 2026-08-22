@@ -66,6 +66,7 @@
         {% endif %}
         {% if po.review_status != "posted" and all_locations %}
         <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:inline-flex; gap:4px; margin-top:4px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
           <select name="source_location_id" style="width:130px; padding:4px 6px;">
             <option value="">{{ "change to..." if po.source_location_name else "choose..." }}</option>
@@ -92,6 +93,7 @@
 
 {% if all_locations %}
 <form id="bulk-assign-form" method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" class="panel row" style="align-items:flex-end;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="field" style="max-width:240px; margin-bottom:0;">
     <label for="bulk_location">Assign selected to</label>
     <select name="source_location_id" id="bulk_location">
@@ -109,7 +111,9 @@
   <p class="subtitle" style="margin:0 0 10px;">
     Posting creates official PO records and commitments in the ledger. It does not move physical inventory.
   </p>
-  <form id="post-form" method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}"></form>
+  <form id="post-form" method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  </form>
   <button type="button" id="post-selected-btn">Post Selected Ready Orders</button>
 </div>
 {% endif %}

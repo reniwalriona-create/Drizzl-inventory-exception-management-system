@@ -78,6 +78,7 @@
 
 <div class="panel">
   <form method="post" onsubmit="return confirm('Replace GRN {{ old_grn.grn_number }}? This voids its current inventory movements and posts the corrected GRN in the same transaction.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
       <label for="reason">Reason for this correction (required)</label>
       <input type="text" name="reason" id="reason" placeholder="e.g. corrected received quantity, lot B was undercounted" required style="width:100%;">

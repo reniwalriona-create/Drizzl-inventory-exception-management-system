@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} - Drizzl Inventory{% endblock %}
+{% block content %}
+<div class="panel">
+  <h1 style="margin-top:0;">{{ code }}</h1>
+  <p class="subtitle" style="margin:0;">{{ message }}</p>
+  <p style="margin:16px 0 0;"><a href="{{ url_for('dashboard') }}">&larr; Back to dashboard</a></p>
+</div>
+{% endblock %}

@@ -23,6 +23,7 @@
 <div class="panel">
   <p class="subtitle" style="margin:0 0 10px;">Quarantined GRNs are safely retained -- their raw and normalized data stays fully visible -- but cannot affect inventory until their issues are resolved. Posted GRNs are locked and no longer revalidated.</p>
   <form method="post" action="{{ url_for('revalidate_grn_batch_route', batch_id=batch.batch_id) }}" onsubmit="return confirm('Recompute PO verification for every unposted staged GRN in this batch? This does not affect inventory.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Revalidate Batch</button>
   </form>
 </div>
@@ -32,7 +33,9 @@
   <p class="empty">No GRNs in this batch.</p>
 </div>
 {% else %}
-<form id="post-form" method="post" action="{{ url_for('post_staged_grns_route', batch_id=batch.batch_id) }}"></form>
+<form id="post-form" method="post" action="{{ url_for('post_staged_grns_route', batch_id=batch.batch_id) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+</form>
 <div class="panel">
   <div class="table-scroll">
   <table>

@@ -50,6 +50,7 @@
       <td>{{ f.created_at }}</td>
       <td>
         <form method="post" action="{{ url_for('resolve_inventory_flag', flag_id=f.id) }}" style="margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="link">Mark resolved</button>
         </form>
       </td>
@@ -76,6 +77,7 @@
       <td>
         {% if v.type == "po" %}
         <form method="post" action="{{ url_for('restore_po_route', po_number=v.id) }}" style="margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="link">Restore</button>
         </form>
         {% elif v.type == "grn" %}
@@ -83,11 +85,13 @@
         <span class="badge">SUPERSEDED by {{ v.superseded_by_grn_number }}</span>
         {% else %}
         <form method="post" action="{{ url_for('restore_grn_route', grn_id=v.id) }}" style="margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="link">Restore</button>
         </form>
         {% endif %}
         {% elif v.type == "movement" %}
         <form method="post" action="{{ url_for('restore_movement_route', movement_id=v.id) }}" style="margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="link">Restore</button>
         </form>
         {% endif %}
@@ -158,6 +162,7 @@
         {% else %}
         <span class="badge">Not allocated</span>
         <form method="post" action="{{ url_for('assign_po_location_route', po_number=po.po_number) }}" style="margin:4px 0 0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <select name="source_location" style="width:110px; display:inline-block; padding:4px 6px;">
             <option value="">choose...</option>
             {% for l in all_locations %}
@@ -172,6 +177,7 @@
       <td>
         <form method="post" action="{{ url_for('void_po_route', po_number=po.po_number) }}" style="margin:0;"
               onsubmit="return confirm('Void PO {{ po.po_number }}? It stays visible on the Look up page and in Voided entries below, just excluded from every calculation -- restorable anytime.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="text" name="reason" placeholder="Reason" required style="width:100px; display:inline-block; padding:4px 6px; margin-bottom:4px;">
           <button type="submit" class="link">Void</button>
         </form>
@@ -326,6 +332,7 @@
       <td>{{ r.created_at }}</td>
       <td>
         <form method="post" action="{{ url_for('resolve_flag', flag_id=r.id) }}" style="margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="link">Mark resolved</button>
         </form>
       </td>

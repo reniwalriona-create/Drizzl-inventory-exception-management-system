@@ -29,6 +29,7 @@
     This order is READY. Posting creates an official PO record and commitment -- it does not move physical inventory.
   </p>
   <form method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}" onsubmit="return confirm('Post PO {{ po.external_po_number }} to the official ledger? This creates an official PO record and commitment -- it does not move physical inventory.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
     <button type="submit">Post This Order</button>
   </form>
@@ -84,6 +85,7 @@
     <p class="subtitle" style="margin:0;">Locked -- this order has been posted to the official ledger.</p>
     {% elif all_locations %}
     <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:flex; gap:6px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
       <select name="source_location_id" style="flex:1;">
         <option value="">{{ "change to..." if po.source_location_name else "choose warehouse..." }}</option>

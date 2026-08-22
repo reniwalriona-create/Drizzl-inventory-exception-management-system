@@ -27,6 +27,7 @@
 {% else %}
 <div class="panel">
   <form method="post" action="{{ url_for('revalidate_single_grn_route', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}" onsubmit="return confirm('Recompute PO verification for this GRN using its existing staged data? This does not reparse the file or affect inventory.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Revalidate GRN</button>
   </form>
 </div>
@@ -38,6 +39,7 @@
     including any product on that PO completely absent from this GRN.
   </p>
   <form method="post" action="{{ url_for('post_staged_grns_route', batch_id=batch.batch_id) }}" onsubmit="return confirm('Post GRN {{ grn.external_grn_number }} to the official ledger? This creates an official receipt record, reduces inventory, and closes the related PO commitment.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="staged_grn_ids" value="{{ grn.staged_grn_id }}">
     <button type="submit">Post This GRN</button>
   </form>
