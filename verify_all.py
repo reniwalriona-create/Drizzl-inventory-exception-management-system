@@ -31,6 +31,7 @@ VERIFY_SUITES = [
     "verify_po_csv_staging.py",
     "verify_po_review_ui.py",
     "verify_po_posting.py",
+    "verify_canonical_manual_movements.py",
     "verify_grn_csv_staging.py",
     "verify_grn_review_ui.py",
     "verify_grn_posting.py",

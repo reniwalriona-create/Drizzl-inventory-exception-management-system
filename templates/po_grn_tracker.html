@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}PO–GRN Tracker - Drizzl Inventory{% endblock %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Operations</div><h1>PO–GRN fulfillment</h1><p class="subtitle">See which official POs still need a GRN and which have closed with a quantity difference.</p></div></div>
+
+<div class="metrics">
+  <div class="metric"><span class="metric-label">All official POs</span><strong class="metric-value">{{ total_rows }}</strong></div>
+  <div class="metric metric-warning"><span class="metric-label">Awaiting GRN</span><strong class="metric-value">{{ counts.awaiting_grn }}</strong></div>
+  <div class="metric metric-success"><span class="metric-label">GRN posted</span><strong class="metric-value">{{ counts.grn_posted }}</strong></div>
+  <div class="metric metric-error"><span class="metric-label">With discrepancy</span><strong class="metric-value">{{ counts.grn_posted_discrepancy }}</strong></div>
+  <div class="metric"><span class="metric-label">Voided</span><strong class="metric-value">{{ counts.voided }}</strong></div>
+</div>
+
+<div class="panel toolbar">
+  <div class="toolbar-copy">A GRN closes the entire PO commitment. Quantity differences remain visible for later discrepancy review.</div>
+  <form method="get" class="row" style="align-items:flex-end;">
+    <div class="field" style="margin:0; max-width:280px;">
+      <label for="status">Filter by fulfillment status</label>
+      <select id="status" name="status" onchange="this.form.submit()">
+        <option value="">All official POs ({{ total_rows }})</option>
+        <option value="awaiting_grn" {{ "selected" if selected_status == "awaiting_grn" }}>Awaiting GRN ({{ counts.awaiting_grn }})</option>
+        <option value="grn_posted" {{ "selected" if selected_status == "grn_posted" }}>GRN posted ({{ counts.grn_posted }})</option>
+        <option value="grn_posted_discrepancy" {{ "selected" if selected_status == "grn_posted_discrepancy" }}>GRN posted – discrepancy ({{ counts.grn_posted_discrepancy }})</option>
+        <option value="voided" {{ "selected" if selected_status == "voided" }}>Voided ({{ counts.voided }})</option>
+      </select>
+    </div>
+  </form>
+</div>
+
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>{{ "Filtered official POs" if selected_status else "All official POs" }}</h2><span class="subtitle" style="margin:0;">{{ rows|length }} result{{ "s" if rows|length != 1 }}</span></div>
+  {% if rows %}
+  <div class="table-scroll"><table>
+    <tr><th>PO number</th><th>Destination</th><th>Drizzl source</th><th>Expected</th><th>Ordered</th><th>GRN number</th><th>GRN posted</th><th>Received</th><th>Difference</th><th></th></tr>
+    {% for row in rows %}
+    <tr>
+      <td><a class="cell-primary" href="{{ url_for('lookup', q=row.po_number) }}">{{ row.po_number }}</a><div style="margin-top:4px;"><span class="badge badge-{{ row.fulfillment_status }}">{{ row.fulfillment_status.replace("_", " ")|upper }}</span></div></td>
+      <td>{{ row.destination_facility_name or row.facility_name or "—" }}</td>
+      <td>{{ row.source_location_name or "—" }}</td>
+      <td>{{ row.expected_delivery_date or "—" }}</td>
+      <td>{{ "%.0f"|format(row.total_ordered_qty) }}</td>
+      <td>{% if row.grn_number %}<a href="{{ url_for('lookup', q=row.grn_number) }}">{{ row.grn_number }}</a>{% else %}—{% endif %}</td>
+      <td>{{ row.grn_posted_at or "—" }}</td>
+      <td>{{ "%.0f"|format(row.total_received_qty) if row.total_received_qty is not none else "—" }}</td>
+      <td>{{ "%.0f"|format(row.total_discrepancy_qty) if row.total_discrepancy_qty is not none else "—" }}</td>
+      <td><a href="{{ url_for('lookup', q=row.po_number) }}">View chain</a></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="empty">No official POs match this filter.</p>{% endif %}
+</div>
+{% endblock %}

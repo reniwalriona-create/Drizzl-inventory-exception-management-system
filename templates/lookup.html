@@ -1,14 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Look up document - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>Look up a PO or GRN</h1>
-<p class="subtitle">Type either number and it pulls the whole chain: the PO, every GRN delivered against it, the canonical PO-vs-GRN discrepancy comparison, the ledger movements they created, and any flags raised while parsing them.</p>
+<div class="page-header"><div><div class="eyebrow">Document trace</div><h1>Look up a PO or GRN</h1><p class="subtitle">Search one document number to trace its official PO, linked GRN, inventory movements, and review history.</p></div></div>
 
-<div class="panel">
+<div class="panel toolbar">
   <form method="get" class="row" style="align-items:flex-end;">
-    <div class="field">
+    <div class="field" style="min-width:320px; margin-bottom:0;">
       <label for="q">PO / GRN number</label>
-      <input type="text" name="q" id="q" value="{{ query or '' }}" autofocus>
+      <input type="text" name="q" id="q" value="{{ query or '' }}" placeholder="e.g. CADPO219808 or JCE000177512" autofocus>
     </div>
     <div class="field" style="flex:0;">
       <button type="submit">Look up</button>
@@ -17,7 +16,7 @@
 </div>
 
 {% if query and not result %}
-<div class="panel">
+<div class="panel callout-error">
   <p class="empty">No PO or GRN found with number "{{ query }}".</p>
 </div>
 {% endif %}
@@ -25,9 +24,11 @@
 {% if result %}
 
 {% if result.po %}
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Purchase order {{ result.po.po_number }}</h2>{% if result.po.voided %}<span class="badge badge-voided">Voided</span>{% else %}<span class="badge badge-posted">Official</span>{% endif %}</div>
+  <div style="padding:18px 20px;">
   <div class="row" style="justify-content:space-between; align-items:flex-start;">
-    <h2 style="margin-top:0;">Purchase Order {{ result.po.po_number }}</h2>
+    <span></span>
     {% if result.po.voided %}
     <form method="post" action="{{ url_for('restore_po_route', po_number=result.po.po_number) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -61,7 +62,7 @@
     <form method="post" action="{{ url_for('assign_po_location_route', po_number=result.po.po_number) }}" style="margin:0; display:inline-flex; gap:6px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <select name="source_location" style="width:140px; padding:4px 6px;">
-        <option value="">choose...</option>
+        <option value="">Choose...</option>
         {% for l in all_locations %}
         <option value="{{ l.name }}">{{ l.name }}</option>
         {% endfor %}
@@ -80,7 +81,7 @@
     <div class="field" style="margin-bottom:0;">
       <label style="font-size:0.8rem;">Correct source warehouse to</label>
       <select name="source_location" style="width:160px; padding:4px 6px;" required>
-        <option value="">choose a different warehouse...</option>
+        <option value="">Choose a different warehouse...</option>
         {% for l in all_locations %}
         <option value="{{ l.name }}">{{ l.name }}</option>
         {% endfor %}
@@ -89,7 +90,7 @@
     <div class="field" style="margin-bottom:0;">
       <input type="text" name="reason" placeholder="Reason for correction" required style="width:220px;">
     </div>
-    <button type="submit" class="link">Correct Source Warehouse</button>
+    <button type="submit" class="link">Correct source warehouse</button>
   </form>
   {% endif %}
   {% if result.po.line_items %}
@@ -109,16 +110,16 @@
   <p class="empty">No line items parsed for this PO.</p>
   {% endif %}
 
-  <h2>PO vs GRN discrepancy (canonical, official records)</h2>
+  <details class="panel" style="box-shadow:none; margin-top:18px;">
+  <summary>PO–GRN quantity comparison</summary>
   <p class="subtitle" style="margin:0 0 10px;">Computed Shortfall = PO Ordered &minus; GRN Received, from official posted records only (product_id + external_sku identity) -- never from Source DN Qty, which is a separate audit fact from the CSV's own rejection figure. Only canonical PO lines with at least one official GRN posted are shown.</p>
   {% if result.po.discrepancies %}
   <table>
-    <tr><th>Customer SKU</th><th>Master Product</th><th>Master Barcode</th><th>PO Ordered</th><th>GRN Received</th><th>Computed Shortfall</th><th>Source DN Qty</th><th>Status</th></tr>
+    <tr><th>Customer SKU</th><th>Master product</th><th>PO ordered</th><th>GRN received</th><th>Computed shortfall</th><th>Source DN qty</th><th>Status</th></tr>
     {% for r in result.po.discrepancies %}
     <tr>
       <td>{{ r.external_sku }}</td>
-      <td>{{ r.product_name or "" }}</td>
-      <td>{{ r.barcode or "" }}</td>
+      <td>{{ r.product_name|product_label }}</td>
       <td>{{ "%.0f"|format(r.ordered_qty) }}</td>
       <td>{{ "%.0f"|format(r.received_qty) }}</td>
       <td class="{{ 'neg' if r.computed_shortfall_qty > 0 }}">{{ "%+.0f"|format(r.computed_shortfall_qty) }}</td>
@@ -130,6 +131,8 @@
   {% else %}
   <p class="empty">No canonical discrepancy data -- either this PO has no product_id-identified lines (legacy PDF-sourced PO), or no official GRN has been posted against it yet.</p>
   {% endif %}
+  </details>
+</div>
 </div>
 {% endif %}
 
@@ -184,7 +187,7 @@
     <form method="post" action="{{ url_for('assign_grn_location_route', grn_number=grn.grn_number) }}" style="margin:0; display:inline-flex; gap:6px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <select name="source_location" style="width:140px; padding:4px 6px;">
-        <option value="">{{ "override with..." if grn.source_location else "choose..." }}</option>
+        <option value="">{{ "Override with..." if grn.source_location else "Choose..." }}</option>
         {% for l in all_locations %}
         <option value="{{ l.name }}">{{ l.name }}</option>
         {% endfor %}

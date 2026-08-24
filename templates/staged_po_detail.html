@@ -1,22 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Staged PO {{ po.external_po_number }} - Drizzl Inventory{% endblock %}
 {% block content %}
-<p class="subtitle" style="margin-bottom:6px;"><a href="{{ url_for('po_import_review', batch_id=batch.batch_id) }}">&larr; Back to batch review</a></p>
-<div class="row" style="justify-content:space-between; align-items:flex-start;">
-  <h1 style="margin-bottom:4px;">Staged PO {{ po.external_po_number }}</h1>
-  <span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span>
-</div>
-<p class="subtitle">
-  From batch {{ batch.batch_id }} ({{ batch.source_filename }})
+<div class="eyebrow"><a href="{{ url_for('po_import_review', batch_id=batch.batch_id) }}">PO batch {{ batch.batch_id }}</a> / Detail</div>
+<div class="document-header"><div><h1>PO {{ po.external_po_number }}</h1><p class="subtitle">{{ batch.source_filename }}
   {% if po.review_status == "posted" %}
   &middot; posted to the official PO ledger.
   {% else %}
   &middot; not yet posted to the official PO ledger, inventory, or commitments.
   {% endif %}
-</p>
+  </p></div><span class="badge badge-{{ po.review_status }} document-status">{{ po.review_status.replace("_", " ")|upper }}</span></div>
 
 {% if po.review_status == "posted" %}
-<div class="panel">
+<div class="panel callout">
   <p class="subtitle" style="margin:0;">
     Posted as official PO <a href="{{ url_for('lookup', q=po.external_po_number) }}"><strong>#{{ po.posted_po_id }}</strong></a>
     at {{ po.posted_at }}. This is now an official record and commitment -- its Drizzl source can no longer be
@@ -24,15 +19,42 @@
   </p>
 </div>
 {% elif po.review_status == "ready" %}
-<div class="panel">
+<div class="panel callout-warning">
   <p class="subtitle" style="margin:0 0 10px;">
     This order is READY. Posting creates an official PO record and commitment -- it does not move physical inventory.
   </p>
   <form method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}" onsubmit="return confirm('Post PO {{ po.external_po_number }} to the official ledger? This creates an official PO record and commitment -- it does not move physical inventory.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
-    <button type="submit">Post This Order</button>
+    <button type="submit">Post this order</button>
   </form>
+</div>
+{% elif po.review_status in ("exact_duplicate", "review_required", "reviewed_duplicate") %}
+<div class="panel callout-warning">
+  <h2 style="margin-top:0;">Compare with official PO #{{ po.official_po_id }}</h2>
+  {% if po.review_status == "exact_duplicate" %}
+  <p class="subtitle">This upload has the same meaningful order content as the official PO. It is automatically excluded and will not block new orders.</p>
+  {% elif po.review_status == "reviewed_duplicate" %}
+  <p class="subtitle">Reviewed as <strong>{{ po.duplicate_disposition.replace("_", " ") }}</strong>. Reason: {{ po.duplicate_review_reason }}. The official PO was not changed.</p>
+  {% else %}
+  <p class="subtitle">The PO number already exists, but meaningful content changed. Review the differences before deciding. Neither action changes the official PO.</p>
+  {% endif %}
+  {% if po.differences %}
+  <table>
+    <tr><th>Changed field</th><th>Official PO</th><th>Uploaded CSV</th></tr>
+    {% for difference in po.differences %}
+    <tr><td>{{ difference.field }}</td><td>{{ difference.official if difference.official is not none else "—" }}</td><td>{{ difference.uploaded if difference.uploaded is not none else "—" }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% if po.review_status == "review_required" %}
+  <form method="post" action="{{ url_for('duplicate_po_decision', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}" style="margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="field"><label for="reason">Reason (required for audit)</label><input id="reason" name="reason" required></div>
+    <button type="submit" name="disposition" value="keep_existing">Keep existing PO</button>
+    <button type="submit" name="disposition" value="treat_as_duplicate">Treat as duplicate</button>
+  </form>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -49,16 +71,17 @@
 
 <div class="panel">
   <h2 style="margin-top:0;">Purchase order details</h2>
-  <table>
-    <tr><th>Customer</th><td>{{ batch.customer_name }}</td></tr>
-    <tr><th>Created</th><td>{{ po.po_created_at or "" }}</td></tr>
-    <tr><th>Modified</th><td>{{ po.po_modified_at or "" }}</td></tr>
-    <tr><th>External status</th><td>{{ po.external_status or "" }}</td></tr>
-    <tr><th>Vendor</th><td>{{ po.vendor_name or "" }}</td></tr>
-    <tr><th>PO amount</th><td>{{ po.po_amount if po.po_amount is not none else "" }}</td></tr>
-    <tr><th>Expected delivery</th><td>{{ po.expected_delivery_date or "" }}</td></tr>
-    <tr><th>Expires</th><td>{{ po.po_expiry_date or "" }}</td></tr>
-  </table>
+  <div class="info-grid">
+    <div class="info-item"><span class="info-label">Customer</span><span class="info-value">{{ batch.customer_name }}</span></div>
+    <div class="info-item"><span class="info-label">External status</span><span class="info-value">{{ po.external_status or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">PO amount</span><span class="info-value">{{ po.po_amount if po.po_amount is not none else "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Expected delivery</span><span class="info-value">{{ po.expected_delivery_date or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Expires</span><span class="info-value">{{ po.po_expiry_date or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Created</span><span class="info-value">{{ po.po_created_at or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Modified</span><span class="info-value">{{ po.po_modified_at or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Vendor</span><span class="info-value">{{ po.vendor_name or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Supplier code</span><span class="info-value">{{ po.supplier_code or "—" }}</span></div>
+  </div>
 </div>
 
 <div class="row">
@@ -83,12 +106,14 @@
     </p>
     {% if po.review_status == "posted" %}
     <p class="subtitle" style="margin:0;">Locked -- this order has been posted to the official ledger.</p>
+    {% elif po.review_status in ("exact_duplicate", "review_required", "reviewed_duplicate") %}
+    <p class="subtitle">Not needed: this staged order will not be posted as a new PO.</p>
     {% elif all_locations %}
     <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:flex; gap:6px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
       <select name="source_location_id" style="flex:1;">
-        <option value="">{{ "change to..." if po.source_location_name else "choose warehouse..." }}</option>
+        <option value="">{{ "Change to..." if po.source_location_name else "Choose warehouse..." }}</option>
         {% for l in all_locations %}
         <option value="{{ l.id }}">{{ l.name }}</option>
         {% endfor %}
@@ -101,20 +126,19 @@
   </div>
 </div>
 
-<div class="panel">
-  <h2 style="margin-top:0;">Product lines</h2>
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Product lines</h2><span class="subtitle" style="margin:0;">Customer identity mapped to master products.</span></div>
   <div class="table-scroll">
   <table>
     <tr>
-      <th>Customer SKU</th><th>Customer description</th><th>Master product</th><th>Master barcode</th>
+      <th>Customer SKU</th><th>Customer description</th><th>Master product</th>
       <th>Ordered</th><th>Received (PO export)</th><th>Balanced</th><th>MRP</th><th>Status</th>
     </tr>
     {% for line in po.lines %}
     <tr>
       <td>{{ line.external_sku or "" }}</td>
       <td>{{ line.external_sku_description or "" }}</td>
-      <td>{{ line.master_product_name or "" }}</td>
-      <td>{{ line.master_barcode or "" }}</td>
+      <td>{{ line.master_product_name|product_label }}</td>
       <td>{{ "%.0f"|format(line.ordered_qty) if line.ordered_qty is not none else "" }}</td>
       <td>{{ "%.0f"|format(line.received_qty) if line.received_qty is not none else "" }}</td>
       <td>{{ "%.0f"|format(line.balanced_qty) if line.balanced_qty is not none else "" }}</td>

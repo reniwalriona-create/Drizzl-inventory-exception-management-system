@@ -101,8 +101,8 @@ def run():
     ok &= check("GET / redirects (not 200) when logged out", resp.status_code in (301, 302, 303, 308), f"got {resp.status_code}")
     resp = client.get("/lookup", follow_redirects=True)
     ok &= check("following the redirect lands on the login page", b"Log in" in resp.data)
-    resp = client.get("/upload", follow_redirects=False)
-    ok &= check("GET /upload also redirects when logged out", resp.status_code in (301, 302, 303, 308), f"got {resp.status_code}")
+    resp = client.get("/po-import", follow_redirects=False)
+    ok &= check("GET /po-import also redirects when logged out", resp.status_code in (301, 302, 303, 308), f"got {resp.status_code}")
 
     print("\n--- health endpoint is exempt and reveals nothing sensitive ---")
     resp = client.get("/health")
@@ -128,8 +128,15 @@ def run():
     resp = client.get("/", follow_redirects=False)
     ok &= check("protected route now reachable with a session", resp.status_code == 200, f"got {resp.status_code}")
 
+    conn = db_module.get_connection()
+    try:
+        product = conn.execute(
+            "SELECT product_id, barcode FROM master_products ORDER BY product_id LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
     movement_fields = {
-        "sku_code": "TESTSKU", "quantity": "5", "movement_type": "opening_balance",
+        "product_id": str(product["product_id"]), "quantity": "5", "movement_type": "opening_balance",
         "location_to": "Drizzl Demo Warehouse", "movement_date": "2026-08-17",
     }
 
@@ -146,7 +153,10 @@ def run():
     ok &= check("valid CSRF token + valid form succeeds", resp.status_code == 200 and b"error" not in resp.data.lower()[:200])
     conn = db_module.get_connection()
     try:
-        row = conn.execute("SELECT COUNT(*) AS n FROM inventory_movements WHERE sku_code = 'TESTSKU'").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM inventory_movements WHERE product_id = ? AND sku_code = ?",
+            (product["product_id"], product["barcode"]),
+        ).fetchone()
         ok &= check("the movement was actually recorded", row["n"] == 1, f"got {row['n']}")
     finally:
         conn.close()

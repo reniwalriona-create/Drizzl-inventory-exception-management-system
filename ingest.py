@@ -146,13 +146,13 @@ def void_grn(conn, grn_number, reason):
     )
     voided_movement_ids = [
         r["id"] for r in conn.execute(
-            "SELECT id FROM inventory_movements WHERE reference_type = 'grn' AND reference_id = ? AND voided = 0",
+            "SELECT id FROM inventory_movements WHERE reference_type IN ('grn', 'grn_discrepancy') AND reference_id = ? AND voided = 0",
             (grn_number,),
         ).fetchall()
     ]
     conn.execute(
         "UPDATE inventory_movements SET voided = 1, void_reason = ?, voided_at = CURRENT_TIMESTAMP "
-        "WHERE reference_type = 'grn' AND reference_id = ? AND voided = 0",
+        "WHERE reference_type IN ('grn', 'grn_discrepancy') AND reference_id = ? AND voided = 0",
         (reason, grn_number),
     )
     if voided_movement_ids:
@@ -269,6 +269,11 @@ def unvoid_grn(conn, grn_id):
             )
             """,
             (grn_id,),
+        )
+        conn.execute(
+            "UPDATE inventory_movements SET voided = 0, void_reason = NULL, voided_at = NULL "
+            "WHERE reference_type = 'grn_discrepancy' AND reference_id = ?",
+            (row["grn_number"],),
         )
     else:
         # Legacy PDF GRN -- never part of a supersede chain, so its

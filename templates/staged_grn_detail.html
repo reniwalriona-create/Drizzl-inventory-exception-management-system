@@ -1,22 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Staged GRN {{ grn.external_grn_number }} - Drizzl Inventory{% endblock %}
 {% block content %}
-<p class="subtitle" style="margin-bottom:6px;"><a href="{{ url_for('grn_import_review', batch_id=batch.batch_id) }}">&larr; Back to batch review</a></p>
-<div class="row" style="justify-content:space-between; align-items:flex-start;">
-  <h1 style="margin-bottom:4px;">Staged GRN {{ grn.external_grn_number }}</h1>
-  <span class="badge badge-{{ grn.review_status }}">{{ grn.review_status|upper }}</span>
-</div>
-<p class="subtitle">
-  From batch {{ batch.batch_id }} ({{ batch.source_filename }})
+<div class="eyebrow"><a href="{{ url_for('grn_import_review', batch_id=batch.batch_id) }}">GRN batch {{ batch.batch_id }}</a> / Detail</div>
+<div class="document-header"><div><h1>GRN {{ grn.external_grn_number }}</h1><p class="subtitle">{{ batch.source_filename }}
   {% if grn.review_status == "posted" %}
   &middot; posted to the official ledger.
   {% else %}
-  &middot; a VERIFIED badge means this GRN passed validation and PO verification -- it is still staged and has NOT reduced inventory, created a sale, or released any PO commitment.
+  &middot; staged only. It has not reduced inventory, created a sale, or released any PO commitment.
   {% endif %}
-</p>
+  </p></div><span class="badge badge-{{ grn.display_status }} document-status">{{ grn.display_status.replace("_", " ")|upper }}</span></div>
 
 {% if grn.review_status == "posted" %}
-<div class="panel">
+<div class="panel callout">
   <p class="subtitle" style="margin:0;">
     Posted as official GRN <a href="{{ url_for('lookup', q=grn.external_grn_number) }}"><strong>#{{ grn.posted_grn_id }}</strong></a>
     at {{ grn.posted_at }}. This created official receipt records, reduced inventory by the normalized
@@ -25,7 +20,7 @@
   </p>
 </div>
 {% else %}
-<div class="panel">
+<div class="panel callout-warning">
   <form method="post" action="{{ url_for('revalidate_single_grn_route', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}" onsubmit="return confirm('Recompute PO verification for this GRN using its existing staged data? This does not reparse the file or affect inventory.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Revalidate GRN</button>
@@ -34,49 +29,41 @@
 {% if grn.review_status == "verified" %}
 <div class="panel">
   <p class="subtitle" style="margin:0 0 10px;">
-    This GRN is VERIFIED. Posting creates an official receipt record, reduces inventory by the normalized
+    This GRN is READY TO POST. Posting creates an official receipt record, reduces inventory by the normalized
     received quantities, and closes official PO {{ grn.external_po_number }}'s commitment in full --
     including any product on that PO completely absent from this GRN.
   </p>
   <form method="post" action="{{ url_for('post_staged_grns_route', batch_id=batch.batch_id) }}" onsubmit="return confirm('Post GRN {{ grn.external_grn_number }} to the official ledger? This creates an official receipt record, reduces inventory, and closes the related PO commitment.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="staged_grn_ids" value="{{ grn.staged_grn_id }}">
-    <button type="submit">Post This GRN</button>
+    <button type="submit">Post this GRN</button>
   </form>
 </div>
 {% endif %}
 {% if correction_target %}
-<div class="panel" style="border-color: var(--warn); background: var(--warn-bg);">
+<div class="panel callout-warning" style="background: var(--warn-bg);">
   <p style="margin:0 0 10px; color: var(--warn);">
     This GRN number already has an active official GRN posted (<strong>grn_id {{ correction_target.grn_id }}</strong>) --
     this staged record is quarantined as a duplicate/correction conflict, not a normal post.
   </p>
-  <a href="{{ url_for('correct_grn', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}"><button type="button">Correct / Replace GRN</button></a>
+  <a href="{{ url_for('correct_grn', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}"><button type="button">Correct / replace GRN</button></a>
 </div>
 {% endif %}
 {% endif %}
 
 <div class="panel">
   <h2 style="margin-top:0;">GRN details</h2>
-  <table>
-    <tr><th>Customer</th><td>{{ batch.customer_name }}</td></tr>
-    <tr><th>External PO Number</th><td>{{ grn.external_po_number or "" }}</td></tr>
-    <tr><th>Matched Official PO</th>
-      <td>
-        {% if official_po %}
-        <a href="{{ url_for('lookup', q=official_po.po_number) }}">{{ official_po.po_number }} (PO #{{ official_po.po_id }})</a>
-        {% else %}
-        Not currently available
-        {% endif %}
-      </td>
-    </tr>
-    <tr><th>Invoice Number</th><td>{{ grn.invoice_number or "" }}</td></tr>
-    <tr><th>Invoice Date</th><td>{{ grn.invoice_date or "" }}</td></tr>
-    <tr><th>GRN Created At</th><td>{{ grn.external_created_at or "" }}</td></tr>
-    <tr><th>Supplier Code</th><td>{{ grn.supplier_code or "" }}</td></tr>
-    <tr><th>Vendor Name</th><td>{{ grn.vendor_name or "" }}</td></tr>
-    <tr><th>DN Number</th><td>{{ grn.dn_number or "(none supplied)" }}</td></tr>
-  </table>
+  <div class="info-grid">
+    <div class="info-item"><span class="info-label">Customer</span><span class="info-value">{{ batch.customer_name }}</span></div>
+    <div class="info-item"><span class="info-label">External PO</span><span class="info-value">{{ grn.external_po_number or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Matched official PO</span><span class="info-value">{% if official_po %}<a href="{{ url_for('lookup', q=official_po.po_number) }}">{{ official_po.po_number }} (PO #{{ official_po.po_id }})</a>{% else %}Not available{% endif %}</span></div>
+    <div class="info-item"><span class="info-label">Invoice</span><span class="info-value">{{ grn.invoice_number or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Invoice date</span><span class="info-value">{{ grn.invoice_date or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">GRN created</span><span class="info-value">{{ grn.external_created_at or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Supplier code</span><span class="info-value">{{ grn.supplier_code or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">Vendor</span><span class="info-value">{{ grn.vendor_name or "—" }}</span></div>
+    <div class="info-item"><span class="info-label">DN number</span><span class="info-value">{{ grn.dn_number or "None supplied" }}</span></div>
+  </div>
 </div>
 
 <div class="row">
@@ -158,15 +145,14 @@
   <div class="table-scroll">
   <table>
     <tr>
-      <th>Customer SKU</th><th>Customer Description</th><th>Master Product</th><th>Master Barcode</th>
-      <th>Received Qty</th><th>Source DN Qty</th><th>Lot MRP</th><th>Lot Expiry</th><th>Validation</th><th>Raw Rows</th>
+      <th>Customer SKU</th><th>Customer description</th><th>Master product</th>
+      <th>Received qty</th><th>Source DN qty</th><th>Lot MRP</th><th>Lot expiry</th><th>Validation</th><th>Raw rows</th>
     </tr>
     {% for line in grn.lines %}
     <tr>
       <td>{{ line.external_sku or "" }}</td>
       <td>{{ line.external_sku_description or "" }}</td>
-      <td>{{ line.master_product_name or "Unmapped" }}</td>
-      <td>{{ line.master_barcode or "" }}</td>
+      <td>{{ (line.master_product_name|product_label) if line.master_product_name else "Unmapped" }}</td>
       <td>{{ "%.0f"|format(line.received_qty) if line.received_qty is not none else "" }}</td>
       <td>{{ "%.0f"|format(line.dn_quantity) if line.dn_quantity is not none else "" }}</td>
       <td>{{ line.lot_mrp if line.lot_mrp is not none else "" }}</td>
@@ -209,14 +195,13 @@
   <div class="table-scroll">
   <table>
     <tr>
-      <th>Customer SKU</th><th>Master Product</th><th>Master Barcode</th>
-      <th>PO Ordered</th><th>GRN Received</th><th>Computed PO Shortfall</th><th>Source DN Qty</th><th>Status</th>
+      <th>Customer SKU</th><th>Master product</th>
+      <th>PO ordered</th><th>GRN received</th><th>Computed PO shortfall</th><th>Source DN qty</th><th>Status</th>
     </tr>
     {% for row in comparison %}
     <tr>
       <td>{{ row.external_sku or "" }}</td>
-      <td>{{ row.product_name or "" }}</td>
-      <td>{{ row.barcode or "" }}</td>
+      <td>{{ row.product_name|product_label }}</td>
       <td>{{ "%.0f"|format(row.ordered_qty) }}</td>
       <td>{{ "%.0f"|format(row.received_qty) }}</td>
       <td>{{ "%.0f"|format(row.computed_discrepancy_qty) }}</td>
@@ -245,11 +230,10 @@
   <p class="subtitle" style="margin:0 0 10px;">Read-only. One SALE movement per normalized receipt line -- a multi-lot product shows multiple lines here, each tied to its own official GRN line.</p>
   {% if inventory_effect %}
   <table>
-    <tr><th>Master Product</th><th>Master Barcode</th><th>Quantity</th><th>From Location</th><th></th></tr>
+    <tr><th>Master product</th><th>Quantity</th><th>From location</th><th></th></tr>
     {% for m in inventory_effect %}
     <tr>
-      <td>{{ m.product_name or "" }}</td>
-      <td>{{ m.barcode or "" }}</td>
+      <td>{{ m.product_name|product_label }}</td>
       <td>-{{ "%.0f"|format(m.quantity) }}</td>
       <td>{{ m.from_location or "" }}</td>
       <td>{% if m.voided %}<span class="badge">VOIDED</span>{% endif %}</td>

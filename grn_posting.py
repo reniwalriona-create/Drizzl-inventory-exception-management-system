@@ -341,6 +341,56 @@ def _insert_official_grn(conn, staged_grn, lines, po, supersedes_grn_id=None):
                     product_id=line["product_id"],
                 )
 
+    # One GRN closes the whole PO. Accepted units above leave stock as
+    # SALE movements; every positive PO-vs-GRN shortfall also leaves stock
+    # now, as one unresolved LOSS movement. A later discrepancy/PR import
+    # classifies the cause only and must never deduct these units again.
+    discrepancy_rows = conn.execute(
+        """
+        SELECT pli.product_id, pli.external_sku,
+               SUM(pli.qty) AS ordered_qty,
+               COALESCE((
+                   SELECT SUM(gli.received_qty)
+                   FROM grn_line_items gli
+                   WHERE gli.grn_id = ?
+                     AND gli.product_id = pli.product_id
+                     AND gli.external_sku = pli.external_sku
+               ), 0) AS received_qty
+        FROM po_line_items pli
+        WHERE pli.po_number = ? AND pli.product_id IS NOT NULL
+        GROUP BY pli.product_id, pli.external_sku
+        """,
+        (grn_id, po["po_number"]),
+    ).fetchall()
+    for discrepancy in discrepancy_rows:
+        shortfall_qty = float(discrepancy["ordered_qty"] or 0) - float(discrepancy["received_qty"] or 0)
+        if shortfall_qty <= 0:
+            continue
+        available_before = reconcile.current_balance_by_product(
+            conn, po["source_location_id"], discrepancy["product_id"]
+        )
+        resulting_balance = available_before - shortfall_qty
+        movement_id = record_movement(
+            conn, movement_date=movement_date_str, sku_code=None,
+            movement_type="loss", quantity=shortfall_qty,
+            location_from=source_location_name,
+            reason="unresolved discrepancy", notes="Unclassified discrepancy",
+            reference_type="grn_discrepancy", reference_id=grn_number,
+            product_id=discrepancy["product_id"],
+        )
+        conn.execute(
+            "UPDATE inventory_movements SET source_grn_id=? WHERE id=?",
+            (grn_id, movement_id),
+        )
+        if resulting_balance < 0:
+            record_inventory_flag(
+                conn, sku_code=None, location_name=source_location_name,
+                source="grn", available_before=available_before,
+                requested_qty=shortfall_qty, resulting_balance=resulting_balance,
+                movement_id=movement_id, reference_id=grn_number,
+                product_id=discrepancy["product_id"],
+            )
+
     conn.execute(
         "UPDATE staged_grns SET posted_grn_id = ?, posted_at = CURRENT_TIMESTAMP WHERE staged_grn_id = ?",
         (grn_id, staged_grn["staged_grn_id"]),

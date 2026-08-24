@@ -4,6 +4,7 @@ against the real drizzl_inventory database (via db.get_connection()), the
 same connection app.py uses -- not an isolated throwaway copy, since the
 whole point is confirming the actual migration/seed landed correctly.
 
+Runs against a disposable PostgreSQL database, never the development database.
 Checks only that the *specific* expected rows exist and resolve correctly
 -- never asserts a total row count on master_products or on Scootsy's
 mapping count, since more products/mappings will be added later and this
@@ -19,6 +20,9 @@ import psycopg2.errors
 
 import catalog
 from db import get_connection
+from verify_db import bootstrap_connection, create_database, drop_database
+
+TEST_DB_NAME = "drizzl_inventory_test_product_identity"
 
 EXPECTED_PRODUCTS = [
     ("9000000000001", "Drizzl Passionfruit Probiotic Soda", "250 ml"),
@@ -162,24 +166,27 @@ def check_legacy_still_works(conn, failures):
 
 
 def run():
-    conn = get_connection()
+    create_database(TEST_DB_NAME)
+    conn = bootstrap_connection(TEST_DB_NAME)
     failures = []
-    scootsy_id = get_scootsy_id(conn)
-    if scootsy_id is None:
-        print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
-        return False
+    try:
+        scootsy_id = get_scootsy_id(conn)
+        if scootsy_id is None:
+            print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
+            return False
 
-    check_products_exist(conn, failures)
-    check_barcodes_unique(conn, failures)
-    check_scootsy_mappings(conn, scootsy_id, failures)
-    check_specific_resolutions(conn, scootsy_id, failures)
-    check_unmapped_product_exists_independently(conn, scootsy_id, failures)
-    check_unknown_sku_no_autocreate(conn, scootsy_id, failures)
-    check_duplicate_mapping_rejected(conn, scootsy_id, failures)
-    check_reseed_idempotent(conn, failures)
-    check_legacy_still_works(conn, failures)
-
-    conn.close()
+        check_products_exist(conn, failures)
+        check_barcodes_unique(conn, failures)
+        check_scootsy_mappings(conn, scootsy_id, failures)
+        check_specific_resolutions(conn, scootsy_id, failures)
+        check_unmapped_product_exists_independently(conn, scootsy_id, failures)
+        check_unknown_sku_no_autocreate(conn, scootsy_id, failures)
+        check_duplicate_mapping_rejected(conn, scootsy_id, failures)
+        check_reseed_idempotent(conn, failures)
+        check_legacy_still_works(conn, failures)
+    finally:
+        conn.close()
+        drop_database(TEST_DB_NAME)
 
     if failures:
         print(f"FAILED ({len(failures)} issue(s)):")

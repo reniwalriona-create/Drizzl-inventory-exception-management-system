@@ -1,55 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Review GRN batch {{ batch.batch_id }} - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>GRN Import Review</h1>
-<p class="subtitle">Staged GRNs only -- a VERIFIED badge means the GRN passed validation and PO verification, not that inventory has been reduced. Posting creates official records, reduces inventory by the normalized received quantities, and closes the related PO commitments.</p>
-
-<div class="panel">
-  <p class="subtitle" style="margin:0 0 6px;">
-    File: <strong>{{ batch.source_filename }}</strong> &middot;
-    Customer: <strong>{{ batch.customer_name }}</strong> &middot;
-    Uploaded: {{ batch.created_at }}
-  </p>
-  <p class="subtitle" style="margin:0;">
-    Raw rows: <strong>{{ summary.raw_rows }}</strong> &middot;
-    Normalized lines: <strong>{{ summary.lines }}</strong> &middot;
-    GRNs: <strong>{{ summary.grns }}</strong> &middot;
-    <span class="badge badge-verified">Verified {{ summary.verified }}</span>
-    <span class="badge badge-quarantined">Quarantined {{ summary.quarantined }}</span>
-    <span class="badge badge-posted">Posted {{ summary.posted }}</span>
-  </p>
+<div class="page-header">
+  <div>
+    <div class="eyebrow">GRN imports / batch {{ batch.batch_id }}</div>
+    <h1>Review goods receipts</h1>
+    <p class="subtitle">Confirm matching and exceptions before anything affects inventory. Only GRNs marked ready to post can be selected.</p>
+  </div>
+  <a href="{{ url_for('grn_import') }}">&larr; All GRN imports</a>
 </div>
 
-<div class="panel">
-  <p class="subtitle" style="margin:0 0 10px;">Quarantined GRNs are safely retained -- their raw and normalized data stays fully visible -- but cannot affect inventory until their issues are resolved. Posted GRNs are locked and no longer revalidated.</p>
+<div class="panel toolbar">
+  <div>
+    <div class="cell-primary">{{ batch.source_filename }}</div>
+    <div class="cell-secondary">{{ batch.customer_name }} &middot; Uploaded {{ batch.created_at }} &middot; {{ summary.raw_rows }} raw rows / {{ summary.lines }} normalized lines</div>
+  </div>
   <form method="post" action="{{ url_for('revalidate_grn_batch_route', batch_id=batch.batch_id) }}" onsubmit="return confirm('Recompute PO verification for every unposted staged GRN in this batch? This does not affect inventory.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit">Revalidate Batch</button>
+    <button type="submit">Revalidate batch</button>
   </form>
 </div>
 
+<div class="metrics">
+  <div class="metric"><span class="metric-label">Total GRNs</span><strong class="metric-value">{{ summary.grns }}</strong></div>
+  <div class="metric metric-success"><span class="metric-label">Ready to post</span><strong class="metric-value">{{ summary.ready_to_post }}</strong></div>
+  <div class="metric metric-error"><span class="metric-label">PO not found</span><strong class="metric-value">{{ summary.po_not_found }}</strong></div>
+  <div class="metric metric-warning"><span class="metric-label">Already posted</span><strong class="metric-value">{{ summary.grn_already_posted }}</strong></div>
+  <div class="metric metric-warning"><span class="metric-label">Other batch</span><strong class="metric-value">{{ summary.duplicate_other_batch }}</strong></div>
+  <div class="metric metric-error"><span class="metric-label">Review / data</span><strong class="metric-value">{{ summary.review_required + summary.data_error }}</strong></div>
+  <div class="metric"><span class="metric-label">Posted</span><strong class="metric-value">{{ summary.posted }}</strong></div>
+</div>
+
 {% if not staged_grns %}
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>GRNs in this batch</h2><span class="subtitle" style="margin:0;">Select ready rows, then post from the action bar below.</span></div>
   <p class="empty">No GRNs in this batch.</p>
 </div>
 {% else %}
 <form id="post-form" method="post" action="{{ url_for('post_staged_grns_route', batch_id=batch.batch_id) }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 </form>
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>GRNs in this batch</h2><span class="subtitle" style="margin:0;">Select ready rows, then post from the action bar below.</span></div>
   <div class="table-scroll">
   <table>
     <tr>
       <th><input type="checkbox" id="select-all"></th>
-      <th>GRN Number</th>
-      <th>PO Number</th>
+      <th>GRN number</th>
+      <th>PO number</th>
       <th>Destination</th>
       <th>Invoice</th>
       <th>Lines</th>
       <th>Received</th>
       <th>Discrepancy</th>
-      <th>Drizzl Source</th>
-      <th>Status</th>
+      <th>Drizzl source</th>
       <th>Issue</th>
       <th></th>
     </tr>
@@ -60,7 +64,10 @@
         <input type="checkbox" class="grn-checkbox" value="{{ g.staged_grn_id }}" data-status="{{ g.review_status }}">
         {% endif %}
       </td>
-      <td><a href="{{ url_for('staged_grn_detail', batch_id=batch.batch_id, staged_grn_id=g.staged_grn_id) }}">{{ g.external_grn_number }}</a></td>
+      <td>
+        <a class="cell-primary" href="{{ url_for('staged_grn_detail', batch_id=batch.batch_id, staged_grn_id=g.staged_grn_id) }}">{{ g.external_grn_number }}</a>
+        <div style="margin-top:4px;"><span class="badge badge-{{ g.display_status }}">{{ g.display_status.replace("_", " ")|upper }}</span></div>
+      </td>
       <td>{{ g.external_po_number or "" }}</td>
       <td>{{ g.facility_name or "" }}</td>
       <td>{{ g.invoice_number or "" }}</td>
@@ -68,13 +75,7 @@
       <td>{{ "%.0f"|format(g.total_received_qty) }} units</td>
       <td>{{ "%.0f"|format(g.total_computed_discrepancy_qty) if g.total_computed_discrepancy_qty is not none else "—" }}</td>
       <td>{{ g.official_source_location_name or "—" }}</td>
-      <td>
-        <span class="badge badge-{{ g.review_status }}">{{ g.review_status|upper }}</span>
-        {% if g.review_status == "posted" %}
-        <div><a href="{{ url_for('lookup', q=g.external_grn_number) }}" style="font-size:0.78rem;">Official GRN #{{ g.posted_grn_id }}</a></div>
-        {% endif %}
-      </td>
-      <td style="max-width:220px;">{{ g.primary_issue or "—" }}</td>
+      <td><div class="issue-text {{ 'issue-warning' if g.display_status in ('grn_already_posted', 'duplicate_other_batch') else '' }}">{{ g.primary_issue or "—" }}</div>{% if g.review_status == "posted" %}<div class="cell-secondary"><a href="{{ url_for('lookup', q=g.external_grn_number) }}">Official GRN #{{ g.posted_grn_id }}</a></div>{% endif %}</td>
       <td><a href="{{ url_for('staged_grn_detail', batch_id=batch.batch_id, staged_grn_id=g.staged_grn_id) }}">View</a></td>
     </tr>
     {% endfor %}
@@ -82,12 +83,10 @@
   </div>
 </div>
 
-{% if summary.verified %}
-<div class="panel">
-  <p class="subtitle" style="margin:0 0 10px;">
-    Posting creates official GRN records, reduces inventory by the normalized received quantities, and closes the related PO commitments in full -- even for a product completely absent from the GRN.
-  </p>
-  <button type="button" id="post-selected-btn">Post Selected Verified GRNs</button>
+{% if summary.ready_to_post %}
+<div class="panel sticky-actions">
+  <p class="subtitle">Posting reduces inventory and closes the related PO commitments in full. This action is recorded in the ledger.</p>
+  <button type="button" id="post-selected-btn">Post selected ready GRNs</button>
 </div>
 {% endif %}
 
@@ -103,7 +102,7 @@
       var ready = checked.filter(function (cb) { return cb.dataset.status === "verified"; });
       var skipped = checked.length - ready.length;
       if (ready.length === 0) {
-        alert("Select at least one VERIFIED GRN to post. Quarantined or already-posted GRNs can't be posted.");
+        alert("Select at least one READY TO POST GRN. Blocked or already-posted GRNs can't be posted.");
         return;
       }
       var msg = "Post " + ready.length + " selected GRN(s) to the official ledger?";

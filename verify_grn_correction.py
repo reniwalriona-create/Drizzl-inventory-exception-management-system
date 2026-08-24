@@ -216,7 +216,7 @@ def run():
         ok &= check("original staged GRN verified", grns1["GRN-CORR"]["po_verification_status"] == "verified")
         old_grn_id = post_one(conn, batch1, original_staged_id)
         balance_after_original = reconcile.current_balance_by_product(conn, bangalore_id, p_passion)
-        ok &= check("balance after original GRN is 1000-200=800", balance_after_original == 800, f"got {balance_after_original}")
+        ok &= check("balance after original GRN is 1000-600=400 (full PO leaves stock)", balance_after_original == 400, f"got {balance_after_original}")
 
         # -----------------------------------------------------------------
         print("\n--- 1: corrected GRN CANNOT auto-replace original (duplicate grn_number is quarantined) ---")
@@ -238,7 +238,7 @@ def run():
 
         normal_post_result = grn_posting.post_staged_grns(conn, batch2, [corrected_staged_id])
         ok &= check("normal post_staged_grns() REJECTS it, does not auto-replace", bool(normal_post_result["rejected"]), f"got {normal_post_result}")
-        ok &= check("balance unchanged by the rejected auto-post attempt", reconcile.current_balance_by_product(conn, bangalore_id, p_passion) == 800)
+        ok &= check("balance unchanged by the rejected auto-post attempt", reconcile.current_balance_by_product(conn, bangalore_id, p_passion) == 400)
         conn.commit()
 
         # -----------------------------------------------------------------
@@ -301,7 +301,7 @@ def run():
         ok &= check("no replacement GRN row persisted after rollback", new_exists is None)
         still_posted = conn.execute("SELECT posted_grn_id FROM staged_grns WHERE staged_grn_id = ?", (corrected_staged_id,)).fetchone()
         ok &= check("corrected staged GRN's posted_grn_id reverted to NULL after rollback", still_posted["posted_grn_id"] is None)
-        ok &= check("balance reverted to 800 after rollback", reconcile.current_balance_by_product(conn, bangalore_id, p_passion) == 800)
+        ok &= check("balance reverted to 400 after rollback", reconcile.current_balance_by_product(conn, bangalore_id, p_passion) == 400)
 
         # -----------------------------------------------------------------
         print("\n--- 2/3/4/5/6: explicit replacement succeeds; 200 -> corrected 250 gives ACTIVE effect 250, not 450 ---")
@@ -329,7 +329,7 @@ def run():
         ok &= check("18: replacement GRN records supersedes_grn_id = old", new_grn_row["supersedes_grn_id"] == old_grn_id)
 
         balance_after_correction = reconcile.current_balance_by_product(conn, bangalore_id, p_passion)
-        ok &= check("6: active inventory effect is 1000-250=750, NOT 1000-450=550", balance_after_correction == 750, f"got {balance_after_correction}")
+        ok &= check("6: corrected GRN still removes the full 600-unit PO exactly once", balance_after_correction == 400, f"got {balance_after_correction}")
 
         # -----------------------------------------------------------------
         print("\n--- 17: superseded GRN cannot be generically restored ---")
@@ -392,7 +392,7 @@ def run():
         flags_after_original = conn.execute(
             "SELECT * FROM inventory_flags WHERE reference_id = 'GRN-NEG' AND resolved = 0"
         ).fetchall()
-        ok &= check("11: original over-receipt created an unresolved negative flag", len(flags_after_original) == 1, f"got {len(flags_after_original)}")
+        ok &= check("11: sale and remaining PO shortfall each record their negative crossing", len(flags_after_original) == 2, f"got {len(flags_after_original)}")
 
         batch_n2, grns_n2 = stage_and_revalidate(
             conn, [grow(GrnNumber="GRN-NEG", PurchaseOrderNumber="PO-NEG", ReceivedQty="40", SkuCode="DEMO-SKU-005",
@@ -407,9 +407,9 @@ def run():
         new_flags = conn.execute(
             "SELECT * FROM inventory_flags WHERE reference_id = 'GRN-NEG' AND resolved = 0"
         ).fetchall()
-        ok &= check("12: corrected 40 no longer over-receives -- no NEW negative flag needed", len(new_flags) == 0, f"got {len(new_flags)}")
+        ok &= check("12: corrected full-PO removal retains one active negative incident", len(new_flags) == 1, f"got {len(new_flags)}")
         balance_neg = reconcile.current_balance_by_product(conn, bangalore_id, p_orange)
-        ok &= check("balance reflects only the corrected 40, not 50-80-40", balance_neg == 10, f"got {balance_neg}")
+        ok &= check("balance reflects the corrected GRN's full 500-unit PO removal", balance_neg == -450, f"got {balance_neg}")
 
         # A second scenario where the CORRECTED value still overshoots, to prove a NEW flag can still be created.
         batch_n3, grns_n3 = stage_and_revalidate(
@@ -447,10 +447,13 @@ def run():
         neg2_result = grn_posting.replace_posted_grn(conn, neg2_old_grn_id, grns_n5["GRN-NEG2"]["staged_grn_id"], "correcting up, expected to go negative")
         conn.commit()
         new_flags2 = conn.execute("SELECT * FROM inventory_flags WHERE reference_id = 'GRN-NEG2' AND resolved = 0").fetchall()
-        expected_negative = balance_before_neg2 < 15
+        # Full-PO semantics can create one flag for the accepted SALE and
+        # another for the remaining discrepancy LOSS when both start below
+        # zero. Replacing the old GRN must leave only the corrected pair.
+        expected_flags = 2 if balance_before_neg2 < 15 else (1 if balance_before_neg2 - 15 < 485 else 0)
         ok &= check(
             "12: corrected GRN creates a NEW negative flag exactly when the corrected receipt still overshoots",
-            (len(new_flags2) == 1) == expected_negative,
+            len(new_flags2) == expected_flags,
             f"balance_before={balance_before_neg2}, corrected=15, new_flags={len(new_flags2)}",
         )
 

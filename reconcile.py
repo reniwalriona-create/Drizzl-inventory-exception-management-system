@@ -4,7 +4,7 @@ Reconciliation and reporting, built on top of the inventory_movements ledger.
 from db import get_connection
 
 
-def stock_by_location(conn, location=None, sku_code=None):
+def stock_by_location(conn, location=None, sku_code=None, product_id=None):
     """Current stock per SKU per location, derived from the ledger itself
     -- not stored anywhere, always computed fresh from history. Also
     attaches two derived columns per row:
@@ -59,9 +59,16 @@ def stock_by_location(conn, location=None, sku_code=None):
     if sku_code:
         conditions.append("m.sku_code = ?")
         params.append(sku_code)
+    if product_id:
+        conditions.append("m.product_id = ?")
+        params.append(product_id)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " GROUP BY l.name, m.product_id, m.sku_code HAVING SUM(delta) != 0 ORDER BY l.name, qty_on_hand DESC"
+    # Keep exact-zero balances visible. A product with movement history
+    # should not disappear from Stock by Location merely because its inflows
+    # and outflows currently net to zero; zero is an operationally meaningful
+    # balance, especially when open PO commitments remain against it.
+    query += " GROUP BY l.name, m.product_id, m.sku_code ORDER BY l.name, qty_on_hand DESC"
     rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
     committed_sku_map = committed_by_location_sku(conn)
@@ -77,27 +84,29 @@ def stock_by_location(conn, location=None, sku_code=None):
         r["qty_uncommitted"] = r["qty_on_hand"] - c
 
     master_desc = None
-    for (loc, product_id), c in committed_product_map.items():
+    for (loc, committed_product_id), c in committed_product_map.items():
         if location and loc != location:
             continue
-        if sku_code:  # sku_code filter is legacy-identity space only, see docstring
+        if sku_code or (product_id and committed_product_id != product_id):
             continue
-        if (loc, product_id) in seen_product:
+        if (loc, committed_product_id) in seen_product:
             continue
         if master_desc is None:
             master_desc = {
                 p["product_id"]: (p["barcode"], p["product_name"])
                 for p in conn.execute("SELECT product_id, barcode, product_name FROM master_products").fetchall()
             }
-        barcode, product_name = master_desc.get(product_id, (None, None))
+        barcode, product_name = master_desc.get(committed_product_id, (None, None))
         rows.append({
-            "location": loc, "product_id": product_id, "sku_code": barcode, "sku_desc": product_name,
+            "location": loc, "product_id": committed_product_id, "sku_code": barcode, "sku_desc": product_name,
             "barcode": barcode, "qty_on_hand": 0, "qty_committed": c, "qty_uncommitted": 0 - c,
         })
 
     product_desc = None
     for (loc, sku), c in committed_sku_map.items():
         if location and loc != location:
+            continue
+        if product_id:
             continue
         if sku_code and sku != sku_code:
             continue
@@ -255,7 +264,7 @@ def committed_by_location_sku(conn):
     plain {(location, sku_code): qty} dict."""
     by_key = {}
     for r in committed_quantity(conn):
-        if not r["source_location"]:
+        if not r["source_location"] or r["product_id"] is not None:
             continue
         key = (r["source_location"], r["sku_code"])
         by_key[key] = by_key.get(key, 0) + r["qty"]
@@ -288,20 +297,31 @@ def committed_at_location(conn, location_name, sku_code):
     return committed_by_location_sku(conn).get((location_name, sku_code), 0)
 
 
+def committed_at_location_product(conn, location_name, product_id):
+    """Canonical commitment for one Master Product at one location."""
+    return committed_by_location_product(conn).get((location_name, product_id), 0)
+
+
 def unallocated_commitments(conn):
     """committed_quantity(), summed by SKU, for PO lines with NO Drizzl
     source location assigned yet. Shown as its own dashboard total
     rather than guessed into any location's Committed column -- assigns
     via ingest.py's assign_po_source_location()."""
-    by_sku = {}
-    desc_by_sku = {}
+    by_identity = {}
+    details = {}
     for r in committed_quantity(conn):
         if r["source_location"]:
             continue
-        by_sku[r["sku_code"]] = by_sku.get(r["sku_code"], 0) + r["qty"]
-        desc_by_sku[r["sku_code"]] = r["sku_desc"]
+        key = ("product", r["product_id"]) if r["product_id"] is not None else ("older_sku", r["sku_code"])
+        by_identity[key] = by_identity.get(key, 0) + r["qty"]
+        details[key] = {
+            "product_id": r["product_id"],
+            "product_name": r["product_name"] or r["sku_desc"],
+            "barcode": r["barcode"],
+            "external_sku": r["external_sku"] or r["sku_code"],
+        }
     return sorted(
-        ({"sku_code": sku, "sku_desc": desc_by_sku[sku], "qty": qty} for sku, qty in by_sku.items()),
+        ({**details[key], "qty": qty} for key, qty in by_identity.items()),
         key=lambda r: -r["qty"],
     )
 
@@ -329,7 +349,7 @@ def resolve_grn_source_location(conn, grn_number):
     return row["source_location"] if row else None
 
 
-def stock_by_flavor(conn, location=None, sku_code=None):
+def stock_by_flavor(conn, location=None, sku_code=None, product_id=None):
     """Same as stock_by_location() but grouped by flavor (see
     _flavor_name()) instead of raw SKU code -- feeds the stock-by-location
     chart, which stacks flavors within each location bar rather than
@@ -341,7 +361,7 @@ def stock_by_flavor(conn, location=None, sku_code=None):
     If one ever does, check whether its logged quantity means "cans" or
     "packs" before trusting this sum (see po_quantity_by_flavor()'s
     docstring for the same caveat on the PO side)."""
-    rows = stock_by_location(conn, location=location, sku_code=sku_code)
+    rows = stock_by_location(conn, location=location, sku_code=sku_code, product_id=product_id)
     by_key = {}
     for r in rows:
         flavor = _flavor_name(r["sku_desc"]) or r["sku_code"]
@@ -354,7 +374,7 @@ def stock_by_flavor(conn, location=None, sku_code=None):
     ]
 
 
-def damaged_units_by_sku(conn, sku_code=None, location=None):
+def damaged_units_by_sku(conn, sku_code=None, location=None, product_id=None):
     """The running damage counter -- per your own framing, if this
     climbs over time that's a real problem to chase, even if any single
     write-off looks small. `location` filters to where the damaged stock
@@ -380,6 +400,9 @@ def damaged_units_by_sku(conn, sku_code=None, location=None):
     if sku_code:
         query += " AND m.sku_code = ?"
         params.append(sku_code)
+    if product_id:
+        query += " AND m.product_id = ?"
+        params.append(product_id)
     if location:
         query += " AND lf.name = ?"
         params.append(location)
@@ -387,23 +410,53 @@ def damaged_units_by_sku(conn, sku_code=None, location=None):
     return conn.execute(query, params).fetchall()
 
 
-def damaged_units_by_cause(conn, sku_code=None, location=None):
-    """Same counter, grouped by who/what was at fault (the Discrepancy
-    Note's Remarks field, e.g. 'DP WORLD-DAMAGE') -- useful for deciding
-    who to push back on if a pattern shows up."""
+def damaged_units_by_cause(conn, sku_code=None, location=None, product_id=None, date_from=None, date_to=None):
+    """All loss units grouped by cause, including posted discrepancy CSVs.
+
+    Classified discrepancy rows are the source of truth for their cause,
+    whether or not the GRN predates grn_discrepancy ledger movements. The
+    corresponding movement is excluded once classified to prevent counting
+    the same units twice.
+    """
     query = """
-        SELECT COALESCE(m.notes, 'unspecified') AS cause, SUM(m.quantity) AS total_damaged, COUNT(*) AS n_events
-        FROM inventory_movements m
-        LEFT JOIN locations lf ON lf.id = m.location_from_id
-        WHERE m.movement_type = 'loss' AND m.voided = 0
+        WITH loss_events AS (
+          SELECT COALESCE(NULLIF(m.notes, ''), NULLIF(m.reason, ''), 'Unspecified') AS cause,
+                 m.quantity, m.product_id, m.sku_code, lf.name AS location_name, m.movement_date::date AS event_date
+          FROM inventory_movements m
+          LEFT JOIN locations lf ON lf.id=m.location_from_id
+          WHERE m.movement_type='loss' AND m.voided=0
+            AND (m.reference_type != 'grn_discrepancy' OR NOT EXISTS (
+              SELECT 1 FROM staged_discrepancy_lines s
+              WHERE s.discrepancy_movement_id=m.id AND s.classified_at IS NOT NULL
+            ))
+          UNION ALL
+          SELECT COALESCE(NULLIF(s.rejected_reason,''),'Unspecified') AS cause,
+                 s.rejected_qty AS quantity, s.product_id, s.external_sku AS sku_code,
+                 l.name AS location_name, COALESCE(g.grn_date::date, s.classified_at::date) AS event_date
+          FROM staged_discrepancy_lines s
+          JOIN grn_receipts g ON g.grn_id=s.official_grn_id
+          JOIN locations l ON l.id=g.source_location_id
+          WHERE s.classified_at IS NOT NULL AND g.voided=0
+        )
+        SELECT cause, SUM(quantity) AS total_damaged, COUNT(*) AS n_events
+        FROM loss_events WHERE 1=1
     """
     params = []
     if sku_code:
-        query += " AND m.sku_code = ?"
+        query += " AND sku_code = ?"
         params.append(sku_code)
+    if product_id:
+        query += " AND product_id = ?"
+        params.append(product_id)
     if location:
-        query += " AND lf.name = ?"
+        query += " AND location_name = ?"
         params.append(location)
+    if date_from:
+        query += " AND event_date >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += " AND event_date <= ?::date"
+        params.append(date_to)
     query += " GROUP BY cause ORDER BY total_damaged DESC"
     return conn.execute(query, params).fetchall()
 
@@ -558,7 +611,7 @@ def official_po_grn_discrepancies(conn, po_number):
     return results
 
 
-def official_discrepancies(conn, sku_code=None):
+def official_discrepancies(conn, sku_code=None, product_id=None):
     """official_po_grn_discrepancies() across every posted canonical PO
     that has a non-voided official GRN against it -- feeds the
     dashboard's discrepancy panel. sku_code filters on external_sku (the
@@ -584,11 +637,13 @@ def official_discrepancies(conn, sku_code=None):
         rows.extend(official_po_grn_discrepancies(conn, po_number))
     if sku_code:
         rows = [r for r in rows if r["external_sku"] == sku_code]
+    if product_id:
+        rows = [r for r in rows if r["product_id"] == product_id]
     rows.sort(key=lambda r: (-r["computed_shortfall_qty"], r["po_number"]))
     return rows
 
 
-def po_quantity_by_facility(conn, sku_code=None):
+def po_quantity_by_facility(conn, sku_code=None, product_id=None, date_from=None, date_to=None):
     """Total ordered quantity (summed across every SKU on the PO) per
     Scootsy receiving facility -- feeds the "PO quantity by warehouse"
     chart. Facility is the Scootsy warehouse a PO shipped to (e.g.
@@ -599,14 +654,26 @@ def po_quantity_by_facility(conn, sku_code=None):
         JOIN purchase_orders po ON po.po_number = p.po_number AND po.voided = 0
     """
     params = []
+    conditions = []
     if sku_code:
-        query += " WHERE p.item_code = ?"
+        conditions.append("p.item_code = ?")
         params.append(sku_code)
+    if product_id:
+        conditions.append("p.product_id = ?")
+        params.append(product_id)
+    if date_from:
+        conditions.append("po.po_date >= ?::date")
+        params.append(date_from)
+    if date_to:
+        conditions.append("po.po_date <= ?::date")
+        params.append(date_to)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " GROUP BY facility ORDER BY total_qty DESC"
     return conn.execute(query, params).fetchall()
 
 
-def damage_trend_over_time(conn, sku_code=None, location=None):
+def damage_trend_over_time(conn, sku_code=None, location=None, product_id=None, date_from=None, date_to=None):
     """Daily total of 'loss' movements -- feeds the damage-trend chart's
     time axis (paired with damaged_units_by_cause() for the cause
     breakdown)."""
@@ -620,9 +687,18 @@ def damage_trend_over_time(conn, sku_code=None, location=None):
     if sku_code:
         query += " AND m.sku_code = ?"
         params.append(sku_code)
+    if product_id:
+        query += " AND m.product_id = ?"
+        params.append(product_id)
     if location:
         query += " AND lf.name = ?"
         params.append(location)
+    if date_from:
+        query += " AND m.movement_date::date >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += " AND m.movement_date::date <= ?::date"
+        params.append(date_to)
     query += " GROUP BY m.movement_date ORDER BY m.movement_date"
     return conn.execute(query, params).fetchall()
 
@@ -639,7 +715,7 @@ def _flavor_name(sku_desc):
     return sku_desc.split("|")[0].replace("Drizzl", "").strip() or None
 
 
-def po_quantity_by_flavor(conn):
+def po_quantity_by_flavor(conn, date_from=None, date_to=None):
     """Total ordered quantity across every parsed PO, grouped by flavor
     rather than raw SKU code -- feeds the "flavor popularity" pie chart.
     Not filtered by the dashboard's location/SKU filters: narrowing to
@@ -662,16 +738,23 @@ def po_quantity_by_flavor(conn):
     "Unknown", since Phase 5 deliberately never creates a legacy
     `products` row for a customer SKU. Grouping key is unchanged
     (pli.item_code) -- this only changes which description wins."""
-    rows = conn.execute(
-        """
+    query = """
         SELECT MAX(COALESCE(mp.product_name, p.sku_desc)) AS sku_desc, SUM(pli.qty) AS total_qty
         FROM po_line_items pli
         JOIN purchase_orders po ON po.po_number = pli.po_number AND po.voided = 0
         LEFT JOIN products p ON p.sku_code = pli.item_code
         LEFT JOIN master_products mp ON mp.product_id = pli.product_id
-        GROUP BY pli.item_code
-        """
-    ).fetchall()
+        WHERE 1=1
+    """
+    params = []
+    if date_from:
+        query += " AND po.po_date >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += " AND po.po_date <= ?::date"
+        params.append(date_to)
+    query += " GROUP BY pli.item_code"
+    rows = conn.execute(query, params).fetchall()
     by_flavor = {}
     for r in rows:
         flavor = _flavor_name(r["sku_desc"]) or "Unknown"
@@ -723,13 +806,30 @@ def movements_for_location_sku(conn, location_name, sku_code, limit=10):
     ).fetchall()
 
 
+def movements_for_location_product(conn, location_name, product_id, limit=10):
+    """Recent canonical movements for one Master Product and location."""
+    return conn.execute(
+        """
+        SELECT m.*, lf.name AS from_name, lt.name AS to_name
+        FROM inventory_movements m
+        LEFT JOIN locations lf ON lf.id = m.location_from_id
+        LEFT JOIN locations lt ON lt.id = m.location_to_id
+        WHERE (lf.name = ? OR lt.name = ?) AND m.product_id = ? AND m.voided = 0
+        ORDER BY m.id DESC LIMIT ?
+        """,
+        (location_name, location_name, product_id, limit),
+    ).fetchall()
+
+
 def unresolved_inventory_flags(conn):
     """Negative-inventory incidents (manual overrides + GRN-caused) not
     yet marked resolved -- see inventory_flags in schema.sql."""
     return conn.execute(
         """
-        SELECT * FROM inventory_flags
-        WHERE resolved = 0
+        SELECT f.*, mp.product_name, mp.barcode
+        FROM inventory_flags f
+        LEFT JOIN master_products mp ON mp.product_id = f.product_id
+        WHERE f.resolved = 0
         ORDER BY created_at DESC
         """
     ).fetchall()
@@ -804,6 +904,61 @@ def purchase_orders_by_facility(conn, facility=None):
         params.append(facility)
     query += " ORDER BY po.po_date DESC, po.po_number"
     return conn.execute(query, params).fetchall()
+
+
+def po_grn_fulfillment(conn, status=None):
+    """One row per official PO showing whether an active official GRN
+    has resolved it. A posted GRN closes the whole canonical PO commitment;
+    quantity differences are reported separately as discrepancies.
+    """
+    pos = conn.execute(
+        """
+        SELECT po.*, loc.name AS source_location_name,
+               COALESCE(SUM(pli.qty), 0) AS total_ordered_qty
+        FROM purchase_orders po
+        LEFT JOIN locations loc ON loc.id = po.source_location_id
+        LEFT JOIN po_line_items pli ON pli.po_number = po.po_number
+        GROUP BY po.po_id, loc.name
+        ORDER BY po.expected_delivery_date NULLS LAST, po.po_number
+        """
+    ).fetchall()
+    result = []
+    for raw_po in pos:
+        po = dict(raw_po)
+        grn = conn.execute(
+            """
+            SELECT gr.*, COALESCE(SUM(gli.received_qty), 0) AS total_received_qty
+            FROM grn_receipts gr
+            LEFT JOIN grn_line_items gli ON gli.grn_id = gr.grn_id
+            WHERE gr.po_id = ? AND gr.voided = 0
+            GROUP BY gr.grn_id
+            ORDER BY gr.grn_id DESC
+            LIMIT 1
+            """,
+            (po["po_id"],),
+        ).fetchone()
+        discrepancies = official_po_grn_discrepancies(conn, po["po_number"]) if grn else []
+        has_difference = any(float(d["computed_shortfall_qty"] or 0) != 0 for d in discrepancies)
+        if po["voided"]:
+            fulfillment_status = "voided"
+        elif grn is None:
+            fulfillment_status = "awaiting_grn"
+        elif has_difference:
+            fulfillment_status = "grn_posted_discrepancy"
+        else:
+            fulfillment_status = "grn_posted"
+        if status and fulfillment_status != status:
+            continue
+        po.update({
+            "fulfillment_status": fulfillment_status,
+            "grn_id": grn["grn_id"] if grn else None,
+            "grn_number": grn["grn_number"] if grn else None,
+            "grn_posted_at": grn["created_at"] if grn else None,
+            "total_received_qty": grn["total_received_qty"] if grn else None,
+            "total_discrepancy_qty": sum(d["computed_shortfall_qty"] for d in discrepancies) if discrepancies else None,
+        })
+        result.append(po)
+    return result
 
 
 def lookup_document(conn, query):
@@ -909,12 +1064,12 @@ def lookup_document(conn, query):
                 FROM inventory_movements m
                 LEFT JOIN locations lf ON lf.id = m.location_from_id
                 LEFT JOIN locations lt ON lt.id = m.location_to_id
-                WHERE m.reference_type = 'grn' AND m.source_grn_line_item_id IN (
+                WHERE (m.reference_type = 'grn' AND m.source_grn_line_item_id IN (
                     SELECT id FROM grn_line_items WHERE grn_id = ?
-                )
+                )) OR (m.reference_type = 'grn_discrepancy' AND m.source_grn_id = ?)
                 ORDER BY m.id
             """
-            movements_param = grn_id
+            movements_param = (grn_id, grn_id)
         else:
             # Legacy PDF GRN -- never part of a supersede chain, so
             # reference_id text matching is unambiguous exactly as
@@ -927,8 +1082,10 @@ def lookup_document(conn, query):
                 WHERE m.reference_type = 'grn' AND m.reference_id = ?
                 ORDER BY m.id
             """
-            movements_param = grn_number
-        grn_dict["movements"] = [dict(r) for r in conn.execute(movements_query, (movements_param,)).fetchall()]
+            movements_param = (grn_number,)
+        if not isinstance(movements_param, tuple):
+            movements_param = (movements_param,)
+        grn_dict["movements"] = [dict(r) for r in conn.execute(movements_query, movements_param).fetchall()]
         result["grns"].append(grn_dict)
 
     doc_ids = set()

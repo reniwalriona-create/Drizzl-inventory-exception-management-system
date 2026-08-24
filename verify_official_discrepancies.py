@@ -127,9 +127,8 @@ def check_workflow_removed():
     ok &= check("discrepancy_note_parser.py deleted", not Path("discrepancy_note_parser.py").exists())
     ok &= check("verify_discrepancy_note_parser.py deleted", not Path("verify_discrepancy_note_parser.py").exists())
 
-    ok &= check("DOC_TYPES has no discrepancy-note entry", "discrepancy-note" not in app_module.DOC_TYPES)
-
     rules = {r.rule for r in app_module.app.url_map.iter_rules()}
+    ok &= check("legacy direct PDF upload route is removed", "/upload" not in rules)
     ok &= check("no /discrepancy-note/<x>/void route", not any("discrepancy-note" in r for r in rules))
     ok &= check(
         "no upsert_discrepancy_note/void_discrepancy_note/unvoid_discrepancy_note in ingest.py",
@@ -302,6 +301,13 @@ def run():
             "sku_code filter narrows to external_sku=DEMO-SKU-001 only",
             all(r["external_sku"] == "DEMO-SKU-001" for r in filtered) and len(filtered) > 0,
         )
+
+        tracker = {r["po_number"]: r for r in reconcile.po_grn_fulfillment(conn)}
+        ok &= check("fulfillment tracker marks exact receipt GRN POSTED", tracker["PO-EXACT"]["fulfillment_status"] == "grn_posted")
+        ok &= check("fulfillment tracker marks short receipt GRN POSTED DISCREPANCY", tracker["PO-SHORT"]["fulfillment_status"] == "grn_posted_discrepancy")
+        ok &= check("fulfillment tracker marks PO with no GRN AWAITING GRN", tracker["PO-NOGR"]["fulfillment_status"] == "awaiting_grn")
+        awaiting = reconcile.po_grn_fulfillment(conn, status="awaiting_grn")
+        ok &= check("fulfillment tracker status filter returns only awaiting POs", awaiting and all(r["fulfillment_status"] == "awaiting_grn" for r in awaiting))
 
         # -----------------------------------------------------------------
         print("\n--- follow-up: po_vs_received_shortfall() is legacy-only, no overlap with the canonical report ---")

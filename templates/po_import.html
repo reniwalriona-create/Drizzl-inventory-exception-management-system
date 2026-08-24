@@ -1,23 +1,22 @@
 {% extends "base.html" %}
 {% block title %}PO CSV import - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>Purchase Order CSV import</h1>
-<p class="subtitle">Scootsy's bulk PO export -- a single CSV can contain many purchase orders, each with several product lines. Uploading only stages the orders for review; nothing is added to inventory, commitments, or the official PO ledger until each order is reviewed and posted in a later step.</p>
+<div class="page-header"><div><div class="eyebrow">Purchase orders</div><h1>Import PO file</h1><p class="subtitle">Upload a Scootsy CSV to stage its purchase orders. Nothing becomes official until the review step.</p></div></div>
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
-      <label for="file">Purchase Order CSV file</label>
+      <label for="file">Purchase order CSV file</label>
       <input type="file" name="file" id="file" accept=".csv" required>
     </div>
     <button type="submit">Upload &amp; stage</button>
   </form>
 </div>
 
-<h2>Recent imports</h2>
 {% if batches %}
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Recent PO imports</h2><span class="subtitle" style="margin:0;">Open a batch to review its orders.</span></div>
   <div class="table-scroll">
   <table>
     <tr>
@@ -42,7 +41,7 @@
 </div>
 {% else %}
 <div class="panel">
-  <p class="empty">No staged imports yet.</p>
+  <h2 style="margin-top:0;">Recent PO imports</h2><p class="empty">No staged imports yet.</p>
 </div>
 {% endif %}
 {% endblock %}

@@ -278,7 +278,8 @@ def run():
         body = resp.data.decode()
         ok &= check("batch review page 200", resp.status_code == 200)
         ok &= check("shows file name", "GRN_0000000000002.csv" in body)
-        ok &= check("shows Verified 1 / Quarantined 13", "Verified 1" in body.replace("Verified\n", "Verified ").replace("  ", " ") or ('id="' not in body and "1" in body), True)  # soft check, exact counts already verified via backend above
+        ok &= check("shows Ready to post / PO not found metric cards", "READY TO POST" in body and "PO NOT FOUND" in body)
+        ok &= check("each GRN row displays its specific status beside the GRN number", "ETP000135726" in body and "READY TO POST" in body and "PO NOT FOUND" in body)
 
         grns = staging.list_staged_grns(conn, grn_batch_id)
         fc5 = next(g for g in grns if g["external_grn_number"] == "FC5000505570")
@@ -293,13 +294,13 @@ def run():
         resp = client.get(f"/grn-import/{grn_batch_id}/grn/{etp_grn['staged_grn_id']}")
         body = resp.data.decode()
         ok &= check("detail page 200", resp.status_code == 200)
-        ok &= check("shows VERIFIED", "VERIFIED" in body)
+        ok &= check("shows READY TO POST", "READY TO POST" in body)
         ok &= check("links to official PO ETPPO84440", "ETPPO84440" in body)
         ok &= check("shows Drizzl source Drizzl Demo Warehouse", "Drizzl Demo Warehouse" in body)
         ok &= check("shows 360 (DEMO-SKU-001 ordered/received)", "360" in body)
         ok &= check("shows 72 (DEMO-SKU-005 ordered/received)", "72" in body)
-        ok &= check("shows master product name", "Drizzl Passionfruit Probiotic Soda" in body)
-        ok &= check("shows master barcode", "9000000000001" in body)
+        ok &= check("shows short master product name", "Passionfruit Probiotic Soda" in body)
+        ok &= check("hides master barcode", "9000000000001" not in body)
 
         # -----------------------------------------------------------------
         print("\n--- Detail page: duplicate-DN-representation display (FC5000505570) ---")
@@ -327,7 +328,7 @@ def run():
         resp = client.get(f"/grn-import/{grn_batch_id}/grn/{sample['staged_grn_id']}")
         body = resp.data.decode()
         ok &= check("quarantined GRN detail page still 200 (browsable)", resp.status_code == 200)
-        ok &= check("shows QUARANTINED", "QUARANTINED" in body)
+        ok &= check("shows PO NOT FOUND", "PO NOT FOUND" in body)
         ok &= check("shows quarantine reason", "not currently available" in body.lower() or "not found" in body.lower())
 
         # -----------------------------------------------------------------
@@ -363,7 +364,7 @@ def run():
         ok &= check("batch summary reflects verified=2, quarantined=12 after batch revalidate", summary_after["verified"] == 2 and summary_after["quarantined"] == 12, str(summary_after))
 
         resp = client.get(f"/grn-import/{grn_batch_id}/grn/{chm_grn['staged_grn_id']}")
-        ok &= check("CHM000340768 detail page now shows VERIFIED", "VERIFIED" in resp.data.decode())
+        ok &= check("CHM000340768 detail page now shows READY TO POST", "READY TO POST" in resp.data.decode())
 
         # -----------------------------------------------------------------
         print("\n--- PO comparison: absent product + over-receipt (synthetic, via routes) ---")
@@ -389,7 +390,7 @@ def run():
         over_grn = staging.list_staged_grns(conn, over_batch_id)[0]
         resp = client.get(f"/grn-import/{over_batch_id}/grn/{over_grn['staged_grn_id']}")
         body = resp.data.decode()
-        ok &= check("over-receipt shows OVER and GRN is QUARANTINED", "OVER" in body and "QUARANTINED" in body)
+        ok &= check("over-receipt shows OVER and GRN is REVIEW REQUIRED", "OVER" in body and "REVIEW REQUIRED" in body)
 
         # partial receipt is NOT presented as an error
         insert_official_po(conn, "SYNPO-PARTIAL", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(pDEMO-SKU-001, "DEMO-SKU-001", 600)])
@@ -401,7 +402,7 @@ def run():
         partial_grn = staging.list_staged_grns(conn, partial_batch_id)[0]
         resp = client.get(f"/grn-import/{partial_batch_id}/grn/{partial_grn['staged_grn_id']}")
         body = resp.data.decode()
-        ok &= check("partial receipt (600/200) shows VERIFIED, not blocked", "VERIFIED" in body and "QUARANTINED" not in body)
+        ok &= check("partial receipt (600/200) shows READY TO POST, not blocked", "READY TO POST" in body and "REVIEW REQUIRED" not in body)
         ok &= check("partial receipt shows SHORT status, not an error styling", "SHORT" in body)
         ok &= check("computed shortfall 400 shown", "400" in body)
 
@@ -423,6 +424,11 @@ def run():
         ok &= check("landing page 200", resp.status_code == 200)
         ok &= check("customer dropdown lists Scootsy", SCOOTSY_NAME in body)
         ok &= check("recent imports listed", "GRN_0000000000002.csv" in body)
+
+        tracker = client.get("/po-grn-tracker?status=awaiting_grn")
+        tracker_body = tracker.data.decode()
+        ok &= check("PO-GRN tracker page 200", tracker.status_code == 200)
+        ok &= check("PO-GRN tracker shows awaiting official POs", "AWAITING GRN" in tracker_body and "ETPPO84440" in tracker_body)
 
         # -----------------------------------------------------------------
         print("\n--- Ledger isolation (all Phase 7 activity above) ---")

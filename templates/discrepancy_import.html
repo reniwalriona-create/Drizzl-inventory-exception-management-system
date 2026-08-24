@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Discrepancy import - Drizzl Inventory{% endblock %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">GRN shortfalls</div><h1>Import discrepancy file</h1><p class="subtitle">Upload a Scootsy discrepancy CSV to explain why GRN quantities were short. This does not change stock.</p></div></div>
+
+<div class="panel">
+  <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="row">
+      <div class="field">
+        <label for="customer_id">Customer</label>
+        <select name="customer_id" id="customer_id" required>
+          <option value="">Choose customer...</option>
+          {% for customer in customers %}<option value="{{ customer.id }}">{{ customer.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="file">Discrepancy CSV file</label>
+        <input type="file" name="file" id="file" accept=".csv" required>
+      </div>
+    </div>
+    <button type="submit">Upload &amp; review</button>
+  </form>
+</div>
+
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Recent discrepancy imports</h2></div>
+  {% if batches %}
+  <div class="table-scroll"><table>
+    <tr><th>File</th><th>Customer</th><th>Uploaded</th><th>Rows</th><th>Ready</th><th>Blocked</th><th>Ignored</th><th>Posted</th><th></th></tr>
+    {% for batch in batches %}
+    <tr>
+      <td>{{ batch.source_filename }}</td><td>{{ batch.customer_name }}</td><td>{{ batch.created_at }}</td>
+      <td>{{ batch.lines }}</td><td>{{ batch.ready }}</td><td>{{ batch.blocked }}</td><td>{{ batch.ignored }}</td><td>{{ batch.classified }}</td>
+      <td><a href="{{ url_for('discrepancy_import_review', batch_id=batch.batch_id) }}">{{ 'Review & post' if batch.ready > batch.classified else 'View posted' }}</a></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="empty">No discrepancy files imported yet.</p>{% endif %}
+</div>
+{% endblock %}

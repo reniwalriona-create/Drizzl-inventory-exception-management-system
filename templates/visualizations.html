@@ -1,10 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Visualizations - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>Visualizations</h1>
-<p class="subtitle">Same data as the dashboard's tables, charted.</p>
+<div class="page-header"><div><div class="eyebrow">Inventory insights</div><h1>Visualizations</h1><p class="subtitle">Explore stock, demand, and loss patterns from the official ledger.</p></div></div>
 
-<div class="panel">
+<div class="panel toolbar">
   <form method="get" class="row" style="align-items:flex-end;">
     <div class="field">
       <label for="location">Filter by location</label>
@@ -16,32 +15,47 @@
       </select>
     </div>
     <div class="field">
-      <label for="sku">Filter by SKU</label>
-      <select name="sku" id="sku" onchange="this.form.submit()">
-        <option value="">All SKUs</option>
+      <label for="product">Filter by master product</label>
+      <select name="product" id="product" onchange="this.form.submit()">
+        <option value="">All master products</option>
         {% for p in all_products %}
-        <option value="{{ p.sku_code }}" {{ "selected" if selected_sku == p.sku_code }}>{{ p.sku_code }}{% if p.sku_desc %} -- {{ p.sku_desc[:40] }}{% endif %}</option>
+        <option value="{{ p.product_id }}" {{ "selected" if selected_product_id == p.product_id }}>{{ p.product_name|product_label }}</option>
         {% endfor %}
       </select>
     </div>
-    {% if selected_location or selected_sku %}
+    <div class="field">
+      <label for="period">Date range</label>
+      <select name="period" id="period">
+        <option value="all" {{ 'selected' if period == 'all' }}>All time</option>
+        <option value="7d" {{ 'selected' if period == '7d' }}>Last 7 days</option>
+        <option value="30d" {{ 'selected' if period == '30d' }}>Last 30 days</option>
+        <option value="month" {{ 'selected' if period == 'month' }}>This month</option>
+        <option value="custom" {{ 'selected' if period == 'custom' }}>Custom dates</option>
+      </select>
+    </div>
+    <div class="field"><label for="date_from">From</label><input type="date" name="date_from" id="date_from" value="{{ date_from or '' }}"></div>
+    <div class="field"><label for="date_to">To</label><input type="date" name="date_to" id="date_to" value="{{ date_to or '' }}"></div>
+    <div class="field" style="flex:0;"><button type="submit">Apply</button></div>
+    {% if selected_location or selected_product_id or period != 'all' %}
     <div class="field" style="flex:0;">
       <a href="{{ url_for('visualizations') }}">Clear filters</a>
     </div>
     {% endif %}
   </form>
-  <p class="subtitle" style="margin:10px 0 0;">Location and SKU filter the stock and damage charts (SKU also narrows the flavor-popularity chart). PO-by-facility and flavor popularity aren't location-scoped -- POs aren't tied to a Drizzl warehouse.</p>
+  <p class="subtitle" style="margin:10px 0 0;">The date range filters PO, demand, loss, damage, and discrepancy charts. Stock remains the current live balance.</p>
 </div>
 
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Stock by location and product</h2></div>
   {% if charts.stock.labels %}
   <div class="chart-wrap"><canvas id="stockChart"></canvas></div>
   {% else %}
-  <p class="empty">{{ "No stock matches this filter." if (selected_location or selected_sku) else "No movements recorded yet." }}</p>
+  <p class="empty">{{ "No stock matches this filter." if (selected_location or selected_product_id) else "No movements recorded yet." }}</p>
   {% endif %}
 </div>
 
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>PO quantity by facility</h2></div>
   {% if charts.po_by_facility.labels %}
   <div class="chart-wrap"><canvas id="poByFacilityChart"></canvas></div>
   {% else %}
@@ -49,7 +63,8 @@
   {% endif %}
 </div>
 
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Product demand</h2></div>
   {% if charts.flavor_popularity.labels %}
   <div class="chart-wrap"><canvas id="flavorPopularityChart"></canvas></div>
   {% else %}
@@ -57,19 +72,21 @@
   {% endif %}
 </div>
 
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Loss and discrepancies by cause</h2></div>
   {% if charts.damage_cause.labels %}
   <div class="chart-wrap"><canvas id="damageCauseChart"></canvas></div>
   {% else %}
-  <p class="empty">{{ "No damage matches this filter." if (selected_location or selected_sku) else "No damage recorded yet." }}</p>
+  <p class="empty">{{ "No losses match this filter." if (selected_location or selected_product_id) else "No losses recorded yet." }}</p>
   {% endif %}
 </div>
 
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Loss trend</h2></div>
   {% if charts.damage_trend.labels %}
   <div class="chart-wrap"><canvas id="damageTrendChart"></canvas></div>
   {% else %}
-  <p class="empty">No damage to chart yet.</p>
+  <p class="empty">No losses to chart yet.</p>
   {% endif %}
 </div>
 

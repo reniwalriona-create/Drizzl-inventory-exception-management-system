@@ -2,7 +2,7 @@
 {% block title %}Correct GRN {{ old_grn.grn_number }} - Drizzl Inventory{% endblock %}
 {% block content %}
 <p class="subtitle" style="margin-bottom:6px;"><a href="{{ url_for('staged_grn_detail', batch_id=batch_id, staged_grn_id=staged_grn_id) }}">&larr; Back to staged GRN</a></p>
-<h1>Correct / Replace GRN {{ old_grn.grn_number }}</h1>
+<h1>Correct / replace GRN {{ old_grn.grn_number }}</h1>
 <p class="subtitle">Staged GRN {{ staged_grn_id }} (this batch's re-upload) has the same GRN number as an already-posted official GRN. This is never automatic -- review both sides below and explicitly confirm the replacement.</p>
 
 <div class="panel" style="border-color: var(--warn); background: var(--warn-bg);">
@@ -39,11 +39,11 @@
     <h3>Normalized received lines</h3>
     {% if staged_grn.lines %}
     <table>
-      <tr><th>Customer SKU</th><th>Master Product</th><th>Received</th></tr>
+      <tr><th>Customer SKU</th><th>Master product</th><th>Received</th></tr>
       {% for line in staged_grn.lines %}
       <tr>
         <td>{{ line.external_sku or "" }}</td>
-        <td>{{ line.master_product_name or "Unmapped" }}</td>
+        <td>{{ (line.master_product_name|product_label) if line.master_product_name else "Unmapped" }}</td>
         <td>{{ "%.0f"|format(line.received_qty) if line.received_qty is not none else "" }}</td>
       </tr>
       {% endfor %}
@@ -56,14 +56,14 @@
 
 <div class="panel">
   <h2 style="margin-top:0;">PO vs corrected-GRN comparison</h2>
-  <p class="subtitle" style="margin:0 0 10px;">Computed Shortfall = PO Ordered &minus; corrected GRN Received. Shown for reference before you confirm -- this is the shortfall the corrected GRN will produce once posted.</p>
+  <p class="subtitle" style="margin:0 0 10px;">Computed shortfall = PO ordered &minus; corrected GRN received. Shown for reference before you confirm -- this is the shortfall the corrected GRN will produce once posted.</p>
   {% if comparison %}
   <table>
-    <tr><th>Customer SKU</th><th>Master Product</th><th>PO Ordered</th><th>Received</th><th>Computed Shortfall</th><th>Status</th></tr>
+    <tr><th>Customer SKU</th><th>Master product</th><th>PO ordered</th><th>Received</th><th>Computed shortfall</th><th>Status</th></tr>
     {% for row in comparison %}
     <tr>
       <td>{{ row.external_sku or "" }}</td>
-      <td>{{ row.product_name or "" }}</td>
+      <td>{{ row.product_name|product_label }}</td>
       <td>{{ "%.0f"|format(row.ordered_qty) }}</td>
       <td>{{ "%.0f"|format(row.received_qty) }}</td>
       <td>{{ "%.0f"|format(row.computed_discrepancy_qty) }}</td>
@@ -83,7 +83,7 @@
       <label for="reason">Reason for this correction (required)</label>
       <input type="text" name="reason" id="reason" placeholder="e.g. corrected received quantity, lot B was undercounted" required style="width:100%;">
     </div>
-    <button type="submit" style="background: var(--warn);">Replace With Corrected GRN</button>
+    <button type="submit" style="background: var(--warn);">Replace with corrected GRN</button>
   </form>
 </div>
 {% endblock %}

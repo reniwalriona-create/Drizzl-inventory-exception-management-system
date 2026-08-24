@@ -1,15 +1,24 @@
 {% extends "base.html" %}
 {% block title %}Log movement - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>Log a stock movement</h1>
-<p class="subtitle">For anything with no paperwork: production runs, flea-market withdrawals, consignment transfers to a sales associate before any PO exists, or fixing a count. Movement types: <strong>production</strong> (new stock, no source location), <strong>opening balance</strong> (starting stock as of a given date -- use this instead of production so it isn't counted as newly manufactured), <strong>transfer</strong> (moves between locations, still Drizzl's), <strong>sale</strong> (leaves Drizzl's books), <strong>loss</strong> (damaged/expired/missing).</p>
+<div class="page-header"><div><div class="eyebrow">Inventory ledger</div><h1>Log a stock movement</h1><p class="subtitle">Record inventory activity that has no PO or GRN paperwork. Every entry uses an existing master product.</p></div></div>
+<details class="panel">
+  <summary>Movement type guide</summary>
+  <div class="info-grid">
+    <div class="info-item"><span class="info-label">Production</span><span class="info-value">New stock entering a location.</span></div>
+    <div class="info-item"><span class="info-label">Opening balance</span><span class="info-value">Starting stock as of a historical date.</span></div>
+    <div class="info-item"><span class="info-label">Transfer</span><span class="info-value">Moves stock between Drizzl locations.</span></div>
+    <div class="info-item"><span class="info-label">Sale</span><span class="info-value">Stock leaves Drizzl without a GRN.</span></div>
+    <div class="info-item"><span class="info-label">Loss</span><span class="info-value">Damaged, expired, or missing stock.</span></div>
+  </div>
+</details>
 
 {% if pending %}
 <div class="panel" style="border-color: {{ 'var(--error)' if pending.severity == 'negative' else 'var(--warn)' }};">
   {% if pending.severity == 'negative' %}
   <h2 style="margin-top:0; color: var(--error);">&#9888; This movement will create negative inventory</h2>
   <table style="margin-bottom:16px;">
-    <tr><th>SKU</th><td>{{ pending.sku_code }}</td></tr>
+    <tr><th>Master product</th><td>{{ pending.product_name|product_label }}</td></tr>
     <tr><th>Location</th><td>{{ pending.location_from }}</td></tr>
     <tr><th>Available (on hand)</th><td>{{ "%.0f"|format(pending.available) }}</td></tr>
     <tr><th>Requested ({{ pending.movement_type }})</th><td>{{ "%.0f"|format(pending.quantity) }}</td></tr>
@@ -19,7 +28,7 @@
   {% else %}
   <h2 style="margin-top:0; color: var(--warn);">&#9888; This movement will use inventory committed to an open PO</h2>
   <table style="margin-bottom:16px;">
-    <tr><th>SKU</th><td>{{ pending.sku_code }}</td></tr>
+    <tr><th>Master product</th><td>{{ pending.product_name|product_label }}</td></tr>
     <tr><th>Location</th><td>{{ pending.location_from }}</td></tr>
     <tr><th>On hand</th><td>{{ "%.0f"|format(pending.available) }}</td></tr>
     <tr><th>Committed (open PO)</th><td>{{ "%.0f"|format(pending.committed) }}</td></tr>
@@ -35,8 +44,7 @@
     <input type="hidden" name="confirmed_override" value="1">
     <input type="hidden" name="severity" value="{{ pending.severity }}">
     <input type="hidden" name="movement_date" value="{{ pending.movement_date }}">
-    <input type="hidden" name="sku_code" value="{{ pending.sku_code }}">
-    <input type="hidden" name="sku_desc" value="{{ pending.sku_desc }}">
+    <input type="hidden" name="product_id" value="{{ pending.product_id }}">
     <input type="hidden" name="quantity" value="{{ pending.quantity }}">
     <input type="hidden" name="movement_type" value="{{ pending.movement_type }}">
     <input type="hidden" name="location_from" value="{{ pending.location_from }}">
@@ -49,12 +57,13 @@
       <label for="override_reason">Reason for override</label>
       <input type="text" name="override_reason" id="override_reason" placeholder="e.g. &quot;Opening balance not yet entered&quot;" required autofocus>
     </div>
-    <button type="submit">Continue Anyway</button>
+    <button type="submit">Continue anyway</button>
     <a href="{{ url_for('new_movement') }}" style="margin-left:14px;">Cancel</a>
   </form>
 </div>
 {% else %}
 <div class="panel">
+  <h2 style="margin-top:0;">Movement details</h2>
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="row">
@@ -66,7 +75,7 @@
         <label for="movement_type">Movement type</label>
         <select name="movement_type" id="movement_type" required>
           {% for t in movement_types %}
-          <option value="{{ t }}">{{ t.replace('_', ' ') }}</option>
+          <option value="{{ t }}">{{ t.replace('_', ' ')|capitalize }}</option>
           {% endfor %}
         </select>
       </div>
@@ -74,17 +83,14 @@
 
     <div class="row">
       <div class="field">
-        <label for="sku_code">SKU code</label>
-        <input type="text" name="sku_code" id="sku_code" list="sku_list" required>
-        <datalist id="sku_list">
+        <label for="product_id">Master product</label>
+        <select name="product_id" id="product_id" required>
+          <option value="">Choose a master product...</option>
           {% for p in products %}
-          <option value="{{ p.sku_code }}">{{ p.sku_desc or "" }}</option>
+          <option value="{{ p.product_id }}">{{ p.product_name|product_label }}</option>
           {% endfor %}
-        </datalist>
-      </div>
-      <div class="field">
-        <label for="sku_desc">SKU description (only needed for a brand new SKU)</label>
-        <input type="text" name="sku_desc" id="sku_desc">
+        </select>
+        <p class="subtitle" style="margin:5px 0 0;">Only existing master products can affect inventory. Add a genuinely new product from the terminal first.</p>
       </div>
       <div class="field">
         <label for="quantity">Quantity</label>
@@ -101,7 +107,7 @@
         <label for="location_from_type">New "from" location's type</label>
         <select name="location_from_type" id="location_from_type">
           {% for t in location_types %}
-          <option value="{{ t }}">{{ t }}</option>
+          <option value="{{ t }}">{{ t.replace('_', ' ')|capitalize }}</option>
           {% endfor %}
         </select>
       </div>
@@ -116,7 +122,7 @@
         <label for="location_to_type">New "to" location's type</label>
         <select name="location_to_type" id="location_to_type">
           {% for t in location_types %}
-          <option value="{{ t }}">{{ t }}</option>
+          <option value="{{ t }}">{{ t.replace('_', ' ')|capitalize }}</option>
           {% endfor %}
         </select>
       </div>
@@ -141,8 +147,8 @@
 </div>
 {% endif %}
 
-<h2>Recent movements</h2>
-<div class="panel">
+<div class="page-header" style="margin-top:30px; margin-bottom:14px;"><div><h2 style="margin:0;">Recent movements</h2><p class="subtitle">Official and manual ledger activity, newest first.</p></div></div>
+<div class="panel toolbar">
   <form method="get" class="row" style="align-items:flex-end;">
     <div class="field">
       <label for="filter_location">Filter by location</label>
@@ -154,30 +160,32 @@
       </select>
     </div>
     <div class="field">
-      <label for="filter_sku">Filter by SKU</label>
-      <select name="sku" id="filter_sku" onchange="this.form.submit()">
-        <option value="">All SKUs</option>
+      <label for="filter_product">Filter by master product</label>
+      <select name="product" id="filter_product" onchange="this.form.submit()">
+        <option value="">All master products</option>
         {% for p in products %}
-        <option value="{{ p.sku_code }}" {{ "selected" if selected_sku == p.sku_code }}>{{ p.sku_code }}{% if p.sku_desc %} -- {{ p.sku_desc[:40] }}{% endif %}</option>
+        <option value="{{ p.product_id }}" {{ "selected" if selected_product_id == p.product_id }}>{{ p.product_name|product_label }}</option>
         {% endfor %}
       </select>
     </div>
-    {% if selected_location or selected_sku %}
+    {% if selected_location or selected_product_id %}
     <div class="field" style="flex:0;">
       <a href="{{ url_for('new_movement') }}">Clear filters</a>
     </div>
     {% endif %}
   </form>
 </div>
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Movement history</h2><span class="subtitle" style="margin:0;">{{ recent|length }} recent row{{ "s" if recent|length != 1 }}</span></div>
+  <div class="table-scroll">
   {% if recent %}
   <table>
-    <tr><th>Date</th><th>Type</th><th>SKU</th><th>Qty</th><th>From</th><th>To</th><th>Reason</th><th>Reference</th><th></th></tr>
+    <tr><th>Date</th><th>Type</th><th>Master product</th><th>Qty</th><th>From</th><th>To</th><th>Reason</th><th>Reference</th><th></th></tr>
     {% for m in recent %}
     <tr{% if m.voided %} style="opacity:0.6;"{% endif %}>
       <td>{{ m.movement_date }}</td>
       <td>{{ m.movement_type }}</td>
-      <td>{{ m.sku_code }}</td>
+      <td>{{ (m.product_name|product_label) if m.product_name else "Unresolved older entry" }}</td>
       <td>{{ "%.0f"|format(m.quantity) }}</td>
       <td>{{ m.from_name or "" }}</td>
       <td>{{ m.to_name or "" }}</td>
@@ -205,8 +213,9 @@
     {% endfor %}
   </table>
   {% else %}
-  <p class="empty">{{ "No movements match this filter." if (selected_location or selected_sku) else "No movements yet." }}</p>
+  <p class="empty">{{ "No movements match this filter." if (selected_location or selected_product_id) else "No movements yet." }}</p>
   {% endif %}
+  </div>
 </div>
 
 <script>
@@ -214,6 +223,8 @@
     var typeSelect = document.getElementById("movement_type");
     var fromField = document.getElementById("location_from");
     var toField = document.getElementById("location_to");
+    var fromTypeField = document.getElementById("location_from_type");
+    var toTypeField = document.getElementById("location_to_type");
     var fromHint = document.getElementById("from_hint");
     var toHint = document.getElementById("to_hint");
 
@@ -249,6 +260,7 @@
 
       fromField.required = fromRequired;
       fromField.disabled = fromForbidden;
+      fromTypeField.disabled = fromForbidden;
       if (fromForbidden) fromField.value = "";
       fromField.placeholder = fromForbidden ? "(not used for " + t + ")" : fromRequired ? "" : "(leave blank)";
       fromHint.style.display = (fromRequired || fromForbidden) ? "inline-block" : "none";
@@ -256,6 +268,7 @@
 
       toField.required = toRequired;
       toField.disabled = toForbidden;
+      toTypeField.disabled = toForbidden;
       if (toForbidden) toField.value = "";
       toField.placeholder = toForbidden ? "(not used for " + t + ")" : toRequired ? "" : "(leave blank)";
       toHint.style.display = (toRequired || toForbidden) ? "inline-block" : "none";

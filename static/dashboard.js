@@ -2,9 +2,23 @@
 // set (by a small inline <script> in dashboard.html, since that's the one
 // piece that actually comes from the server on each page load).
 document.addEventListener("DOMContentLoaded", function () {
-  var PALETTE = ["#2f6b4f", "#a15c00", "#a1301f", "#2f5f7a", "#7a4f9e", "#6b7269"];
-  var gridColor = "rgba(107, 114, 105, 0.15)";
-  var textColor = "#6b7269";
+  // Colors sampled/approximated from Drizzl's cans: aqua Yuzu, orange,
+  // passionfruit purple, mixed-berry pink, lemon yellow, and leaf green.
+  var PALETTE = ["#56c9c4", "#f28a3b", "#a986cf", "#e878ad", "#efd454", "#35a46f"];
+  var gridColor = "rgba(41, 159, 153, 0.13)";
+  var textColor = "#667473";
+  function colorForLabel(label, index) {
+    var value = String(label || "").toLowerCase();
+    if (value.includes("orange")) return "#f28a3b";
+    if (value.includes("yuzu")) return "#56c9c4";
+    if (value.includes("passionfruit")) return "#a986cf";
+    if (value.includes("berry")) return "#e878ad";
+    if (value.includes("lemon")) return "#efd454";
+    if (value.includes("damaged")) return "#e878ad";
+    if (value.includes("short")) return "#f28a3b";
+    if (value.includes("wrong")) return "#a986cf";
+    return PALETTE[index % PALETTE.length];
+  }
   Chart.defaults.color = textColor;
   Chart.defaults.borderColor = gridColor;
 
@@ -21,8 +35,8 @@ document.addEventListener("DOMContentLoaded", function () {
         labels: labels,
         datasets: datasets.map(function (d, i) {
           return Object.assign({
-            backgroundColor: type === "line" ? "transparent" : PALETTE[i % PALETTE.length],
-            borderColor: PALETTE[i % PALETTE.length],
+            backgroundColor: type === "line" ? "transparent" : (d.colors || colorForLabel(d.label, i)),
+            borderColor: colorForLabel(d.label, i),
             borderWidth: type === "line" ? 2 : 1,
             tension: 0.25,
           }, d);
@@ -65,7 +79,7 @@ document.addEventListener("DOMContentLoaded", function () {
         labels: labels,
         datasets: [{
           data: data,
-          backgroundColor: labels.map(function (_, i) { return PALETTE[i % PALETTE.length]; }),
+          backgroundColor: labels.map(function (label, i) { return colorForLabel(label, i); }),
           borderColor: "#fff",
           borderWidth: 1,
         }],
@@ -107,7 +121,7 @@ document.addEventListener("DOMContentLoaded", function () {
   barOrLineChart(
     "damageCauseChart", "bar",
     charts.damage_cause.labels,
-    [{ label: "Damaged units", data: charts.damage_cause.data }],
+    [{ label: "Loss units", data: charts.damage_cause.data, colors: charts.damage_cause.labels.map(colorForLabel) }],
     { title: "Damaged units by cause", xTitle: "Cause", yTitle: "Units damaged" }
   );
 

@@ -331,12 +331,25 @@ def run():
 
         po_before = table_count(conn, "purchase_orders")
         r6b = po_posting.post_staged_purchase_orders(conn, batch_dup, [dup_po["staged_po_id"]])
-        ok &= check("Test6: duplicate PO number under a different unlinked staged record is rejected", bool(r6b["rejected"]), str(r6b))
+        ok &= check(
+            "Test6: changed same-number PO is quarantined for review, not rejected with unrelated new orders",
+            not r6b["rejected"] and len(r6b["skipped_existing"]) == 1
+            and r6b["skipped_existing"][0]["status"] == "review_required",
+            str(r6b),
+        )
         ok &= check("Test6: nothing new written", table_count(conn, "purchase_orders") == po_before)
         original_row_after = conn.execute("SELECT * FROM purchase_orders WHERE po_id = ?", (p5_po_id,)).fetchone()
         ok &= check("Test6: original official PO left completely unmodified", dict(original_row) == dict(original_row_after))
         dup_after = conn.execute("SELECT posted_po_id FROM staged_purchase_orders WHERE staged_po_id = ?", (dup_po["staged_po_id"],)).fetchone()
         ok &= check("Test6: the duplicate staged record was not linked to the existing official PO", dup_after["posted_po_id"] is None)
+
+        decision_po_id = po_posting.record_duplicate_decision(
+            conn, dup_po["staged_po_id"], "keep_existing", "Quantity differs; preserve the approved official order."
+        )
+        conn.commit()
+        reviewed = staging.get_staged_po(conn, dup_po["staged_po_id"])
+        ok &= check("Test6: review decision links to the existing official PO", decision_po_id == p5_po_id)
+        ok &= check("Test6: review decision persists as reviewed_duplicate", reviewed["review_status"] == "reviewed_duplicate", reviewed["review_status"])
 
         # -----------------------------------------------------------------
         print("\n--- Test 7: cross-customer PO-number collision (temporary global UNIQUE(po_number)) ---")
@@ -432,25 +445,31 @@ def run():
         ok &= check("Test9: source_location resolved from the assigned Drizzl warehouse", loc_ok)
         ok &= check("Test9: committed qty = ordered_qty", qty_ok)
 
-        # committed_by_location_sku() sums by (location, sku_code) across ALL
-        # POs, not just P9 -- other already-posted POs above may share a SKU
-        # with P9 at the same location, so the expected total has to be
-        # independently re-derived from committed_quantity(), not assumed to
-        # equal P9's own line quantity alone.
+        # Canonical commitments must produce exactly one product_id-based
+        # synthetic stock row. They must not also leak through the older
+        # customer-SKU commitment map (the dashboard duplicate fixed after
+        # Phase 12).
         all_committed = reconcile.committed_quantity(conn)
-        expected_committed_by_sku = {}
+        expected_committed_by_product = {}
         for cr in all_committed:
-            if cr["source_location"] != "Drizzl Demo Warehouse" or cr["sku_code"] not in line_by_sku:
+            if cr["source_location"] != "Drizzl Demo Warehouse" or cr["product_id"] is None:
                 continue
-            expected_committed_by_sku[cr["sku_code"]] = expected_committed_by_sku.get(cr["sku_code"], 0) + float(cr["qty"])
+            expected_committed_by_product[cr["product_id"]] = expected_committed_by_product.get(cr["product_id"], 0) + float(cr["qty"])
 
         stock_rows = reconcile.stock_by_location(conn, location="Drizzl Demo Warehouse")
-        synthetic_rows = {r["sku_code"]: r for r in stock_rows if r["qty_on_hand"] == 0 and r["sku_code"] in line_by_sku}
+        synthetic_rows = {r["product_id"]: r for r in stock_rows if r["qty_on_hand"] == 0 and r["product_id"] is not None}
         stock_merge_ok = all(
-            synthetic_rows.get(sku) is not None and float(synthetic_rows[sku]["qty_committed"]) == expected_committed_by_sku.get(sku)
-            for sku, line in line_by_sku.items()
+            synthetic_rows.get(product_id) is not None
+            and float(synthetic_rows[product_id]["qty_committed"]) == expected_qty
+            for product_id, expected_qty in expected_committed_by_product.items()
         )
-        ok &= check("Test9: stock_by_location() shows the synthetic committed-but-zero-on-hand row", stock_merge_ok, str(synthetic_rows))
+        ok &= check("Test9: one canonical synthetic commitment row per Master Product", stock_merge_ok, str(synthetic_rows))
+        legacy_commitment_map = reconcile.committed_by_location_sku(conn)
+        canonical_skus_absent = all(
+            ("Drizzl Demo Warehouse", cr["sku_code"]) not in legacy_commitment_map
+            for cr in all_committed if cr["product_id"] is not None
+        )
+        ok &= check("Test9: canonical commitments do not create duplicate customer-SKU rows", canonical_skus_absent, str(legacy_commitment_map))
 
         # -----------------------------------------------------------------
         print("\n--- Test 10: posting never touches inventory_movements/grn_receipts ---")

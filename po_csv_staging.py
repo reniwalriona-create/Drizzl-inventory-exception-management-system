@@ -346,7 +346,7 @@ def stage_po_csv(conn, csv_path, customer_id=None, filename=None):
     return {"batch_id": batch_id, "reused_existing_batch": False}
 
 
-def review_status(validation_status, source_location_id, posted_po_id=None):
+def review_status(validation_status, source_location_id, posted_po_id=None, duplicate_kind=None):
     """The UI-only review state derived from Phase 3's validation_status,
     whether a Drizzl source has been manually assigned, and (Phase 5)
     whether this staged PO has been posted to the official ledger -- see
@@ -362,6 +362,8 @@ def review_status(validation_status, source_location_id, posted_po_id=None):
         return "posted"
     if validation_status == "blocked":
         return "blocked"
+    if duplicate_kind in {"exact_duplicate", "review_required", "reviewed_duplicate"}:
+        return duplicate_kind
     if source_location_id is None:
         return "needs_source"
     return "ready"
@@ -400,7 +402,12 @@ def list_staged_pos(conn, batch_id):
     result = []
     for r in rows:
         po = dict(r)
-        po["review_status"] = review_status(po["validation_status"], po["source_location_id"], po["posted_po_id"])
+        import po_posting
+        classification = po_posting.classify_existing_po(conn, po)
+        po.update(classification)
+        po["review_status"] = review_status(
+            po["validation_status"], po["source_location_id"], po["posted_po_id"], classification["kind"]
+        )
         result.append(po)
     return result
 
@@ -409,11 +416,82 @@ def batch_summary(conn, batch_id):
     """Server-derived counts for the batch review header -- never trust
     the browser for this."""
     pos = list_staged_pos(conn, batch_id)
-    counts = {"ready": 0, "needs_source": 0, "blocked": 0, "posted": 0}
+    counts = {
+        "ready": 0, "needs_source": 0, "blocked": 0, "posted": 0,
+        "exact_duplicate": 0, "review_required": 0, "reviewed_duplicate": 0,
+    }
     for po in pos:
         counts[po["review_status"]] += 1
     line_count = sum(po["line_count"] for po in pos)
     return {"orders": len(pos), "lines": line_count, **counts}
+
+
+def revalidate_product_mappings(conn, batch_id):
+    """Re-check unmapped customer SKUs after a mapping is added manually.
+
+    This deliberately does not create Master Products or mappings and does not
+    re-parse the source file. It only revisits staged, unposted lines using the
+    authoritative customer-SKU mapping table, then recomputes each staged PO's
+    validation status from its own header errors plus its line statuses.
+    """
+    batch = get_import_batch(conn, batch_id)
+    if batch is None:
+        raise ValueError(f"PO import batch {batch_id} does not exist.")
+
+    lines = conn.execute(
+        """
+        SELECT l.staged_line_id, l.raw_row_id, l.external_sku,
+               l.validation_errors, p.customer_id
+        FROM staged_po_lines l
+        JOIN staged_purchase_orders p ON p.staged_po_id = l.staged_po_id
+        WHERE p.batch_id = ? AND p.posted_po_id IS NULL
+        """,
+        (batch_id,),
+    ).fetchall()
+
+    changed = 0
+    for line in lines:
+        errors = [e for e in line["validation_errors"] if e.get("code") != "unmapped_customer_sku"]
+        product_id = None
+        if line["external_sku"]:
+            resolved = catalog.resolve_customer_sku(conn, line["customer_id"], line["external_sku"])
+            if resolved is not None:
+                product_id = resolved["product_id"]
+            else:
+                errors.append({
+                    "code": "unmapped_customer_sku",
+                    "field": "SkuCode",
+                    "message": "Customer SKU does not map to a Master Product",
+                    "value": line["external_sku"],
+                })
+        status = "blocked" if errors else "valid"
+        conn.execute(
+            "UPDATE staged_po_lines SET product_id = ?, validation_status = ?, validation_errors = ? "
+            "WHERE staged_line_id = ?",
+            (product_id, status, json.dumps(errors), line["staged_line_id"]),
+        )
+        conn.execute(
+            "UPDATE po_import_rows SET validation_status = ?, validation_errors = ? WHERE row_id = ?",
+            (status, json.dumps(errors), line["raw_row_id"]),
+        )
+        changed += 1
+
+    pos = conn.execute(
+        "SELECT staged_po_id, validation_errors FROM staged_purchase_orders "
+        "WHERE batch_id = ? AND posted_po_id IS NULL",
+        (batch_id,),
+    ).fetchall()
+    for po in pos:
+        has_blocked_line = conn.execute(
+            "SELECT 1 FROM staged_po_lines WHERE staged_po_id = ? AND validation_status = 'blocked' LIMIT 1",
+            (po["staged_po_id"],),
+        ).fetchone() is not None
+        status = "blocked" if po["validation_errors"] or has_blocked_line else "valid"
+        conn.execute(
+            "UPDATE staged_purchase_orders SET validation_status = ? WHERE staged_po_id = ?",
+            (status, po["staged_po_id"]),
+        )
+    return changed
 
 
 def list_recent_batches(conn, limit=20):
@@ -448,7 +526,12 @@ def get_staged_po(conn, staged_po_id):
     if row is None:
         return None
     po = dict(row)
-    po["review_status"] = review_status(po["validation_status"], po["source_location_id"], po["posted_po_id"])
+    import po_posting
+    classification = po_posting.classify_existing_po(conn, po)
+    po.update(classification)
+    po["review_status"] = review_status(
+        po["validation_status"], po["source_location_id"], po["posted_po_id"], classification["kind"]
+    )
     po["lines"] = [
         dict(r) for r in conn.execute(
             """

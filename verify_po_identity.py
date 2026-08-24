@@ -1,8 +1,7 @@
 """
 Verifies the Phase 2 Purchase Order identity foundation (po_id as the real
 primary key, po_number kept as backwards-compatible scaffolding) against
-the real drizzl_inventory database, via db.get_connection() -- the same
-connection app.py uses.
+a disposable PostgreSQL database, never the development database.
 
 Since purchase_orders had zero rows at the time of this migration, most
 checks here are real round-trip tests: insert a test PO inside a
@@ -19,6 +18,9 @@ import psycopg2.errors
 
 import purchase_orders as po_helpers
 from db import get_connection
+from verify_db import bootstrap_connection, create_database, drop_database
+
+TEST_DB_NAME = "drizzl_inventory_test_po_identity"
 
 CHILD_FK_TABLES = ["po_line_items", "appointments", "grn_receipts", "debit_notes"]
 MIGRATION_PATH = Path(__file__).parent / "migrations" / "002_po_identity_foundation.sql"
@@ -174,26 +176,29 @@ def check_reapply_migration_idempotent(conn, failures):
 
 
 def run():
-    conn = get_connection()
+    create_database(TEST_DB_NAME)
+    conn = bootstrap_connection(TEST_DB_NAME)
     failures = []
-    scootsy_id = get_scootsy_id(conn)
-    if scootsy_id is None:
-        print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
-        return False
+    try:
+        scootsy_id = get_scootsy_id(conn)
+        if scootsy_id is None:
+            print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
+            return False
 
-    row_count_before = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders").fetchone()["n"]
+        row_count_before = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders").fetchone()["n"]
 
-    check_po_id_is_real_pk(conn, failures)
-    check_child_fks_intact(conn, failures)
-    check_legacy_query_and_insert_pattern(conn, scootsy_id, failures)
-    check_round_trip_and_resolution(conn, scootsy_id, failures)
-    check_reapply_migration_idempotent(conn, failures)
+        check_po_id_is_real_pk(conn, failures)
+        check_child_fks_intact(conn, failures)
+        check_legacy_query_and_insert_pattern(conn, scootsy_id, failures)
+        check_round_trip_and_resolution(conn, scootsy_id, failures)
+        check_reapply_migration_idempotent(conn, failures)
 
-    row_count_after = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders").fetchone()["n"]
-    if row_count_after != row_count_before:
-        failures.append(f"  purchase_orders row count changed from {row_count_before} to {row_count_after} -- verification left data behind")
-
-    conn.close()
+        row_count_after = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders").fetchone()["n"]
+        if row_count_after != row_count_before:
+            failures.append(f"  purchase_orders row count changed from {row_count_before} to {row_count_after} -- verification left data behind")
+    finally:
+        conn.close()
+        drop_database(TEST_DB_NAME)
 
     if failures:
         print(f"FAILED ({len(failures)} issue(s)):")

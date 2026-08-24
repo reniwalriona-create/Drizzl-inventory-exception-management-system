@@ -1,8 +1,29 @@
 private_data/
 uploads/
 inventory.db
-.DS_Store
-.claude/
-.venv/
-__pycache__/
 *.db.backup-*
+*.sql.gz
+*.dump
+
+# secrets / environment
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# editor / OS junk
+.claude/
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# test artifacts
+.pytest_cache/
+*.egg-info/

@@ -1,5 +1,6 @@
 """
-Verifies the Phase 4 PO CSV upload + staged review UI: both the Flask
+Verifies the Phase 4 PO CSV upload + staged review UI in a disposable
+PostgreSQL database: both the Flask
 routes (via app.test_client(), which exercise real HTTP requests and real
 commits, same as a browser would) and the backend functions in
 po_csv_staging.py directly (via savepoints, for tests that don't need a
@@ -20,6 +21,11 @@ import tempfile
 from pathlib import Path
 
 import psycopg2.errors
+
+from verify_db import bootstrap_connection, create_database, drop_database, point_app_at
+
+TEST_DB_NAME = "drizzl_inventory_test_po_review_ui"
+point_app_at(TEST_DB_NAME)  # must happen before importing app
 
 import po_csv_staging as staging
 from app import app
@@ -100,7 +106,7 @@ def cleanup_batch(conn, batch_id):
     conn.commit()
 
 
-def run():
+def _run_checks():
     conn = get_connection()
     # Phase 12: routes are now login-gated. CSRF is disabled for this
     # same-process test harness (Flask-WTF's own documented testing
@@ -387,6 +393,16 @@ def run():
             "No staging data left behind."
         )
     return not failures
+
+
+def run():
+    create_database(TEST_DB_NAME)
+    bootstrap = bootstrap_connection(TEST_DB_NAME)
+    bootstrap.close()
+    try:
+        return _run_checks()
+    finally:
+        drop_database(TEST_DB_NAME)
 
 
 if __name__ == "__main__":

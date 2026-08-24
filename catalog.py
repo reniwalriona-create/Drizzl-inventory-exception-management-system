@@ -1,9 +1,9 @@
 """
 Canonical Drizzl product identity and customer-SKU mapping (Phase 1).
 
-Deliberately separate from ingest.py's _ensure_product() and the legacy
-products/sku_code system, which every existing PO/GRN/movement table still
-uses -- nothing here is wired into that path yet. See PROJECT_HANDOFF.md.
+Master Products are the only valid identity for new inventory activity.
+Customer SKU strings and barcodes are references that resolve to this layer;
+they are never independent stock identities.
 """
 
 
@@ -19,6 +19,15 @@ def get_master_product_by_barcode(conn, barcode):
         "SELECT product_id, barcode, product_name, unit_size, active FROM master_products WHERE barcode = ?",
         (barcode,),
     ).fetchone()
+
+
+def get_master_product_by_id(conn, product_id, active_only=False):
+    """Resolve an internal product id exactly; never guesses or creates."""
+    query = "SELECT product_id, barcode, product_name, unit_size, active FROM master_products WHERE product_id = ?"
+    params = [product_id]
+    if active_only:
+        query += " AND active = TRUE"
+    return conn.execute(query, tuple(params)).fetchone()
 
 
 def resolve_customer_sku(conn, customer_id, external_sku):

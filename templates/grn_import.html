@@ -1,8 +1,7 @@
 {% extends "base.html" %}
 {% block title %}GRN CSV import - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>GRN CSV import</h1>
-<p class="subtitle">Scootsy's bulk GRN export -- a single CSV can contain many GRNs, each with several product/lot lines. GRNs are staged and verified before they can affect inventory -- uploading here does not reduce stock, create a sale, or release any PO commitment.</p>
+<div class="page-header"><div><div class="eyebrow">Goods receipts</div><h1>Import GRN file</h1><p class="subtitle">Upload a Scootsy CSV to stage and verify its receipts. Inventory changes only after review and posting.</p></div></div>
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">
@@ -21,18 +20,18 @@
       <label for="file">GRN CSV file</label>
       <input type="file" name="file" id="file" accept=".csv" required>
     </div>
-    <button type="submit">Stage GRN File</button>
+    <button type="submit">Stage GRN file</button>
   </form>
 </div>
 
-<h2>Recent imports</h2>
 {% if batches %}
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Recent GRN imports</h2><span class="subtitle" style="margin:0;">Open a batch to resolve exceptions and post verified receipts.</span></div>
   <div class="table-scroll">
   <table>
     <tr>
       <th>File</th><th>Customer</th><th>Uploaded</th><th>GRNs</th>
-      <th>Verified</th><th>Quarantined</th><th>Posted</th><th></th>
+      <th>Ready to post</th><th>Needs attention</th><th>Posted</th><th></th>
     </tr>
     {% for b in batches %}
     <tr>
@@ -40,8 +39,8 @@
       <td>{{ b.customer_name }}</td>
       <td>{{ b.created_at }}</td>
       <td>{{ b.summary.grns }}</td>
-      <td>{{ b.summary.verified }}</td>
-      <td>{{ b.summary.quarantined }}</td>
+      <td>{{ b.summary.ready_to_post }}</td>
+      <td>{{ b.summary.po_not_found + b.summary.grn_already_posted + b.summary.duplicate_other_batch + b.summary.review_required + b.summary.data_error }}</td>
       <td>{{ b.summary.posted }}</td>
       <td><a href="{{ url_for('grn_import_review', batch_id=b.batch_id) }}">Review</a></td>
     </tr>
@@ -51,7 +50,7 @@
 </div>
 {% else %}
 <div class="panel">
-  <p class="empty">No GRN imports yet.</p>
+  <h2 style="margin-top:0;">Recent GRN imports</h2><p class="empty">No GRN imports yet.</p>
 </div>
 {% endif %}
 {% endblock %}

@@ -1,27 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Review batch {{ batch.batch_id }} - Drizzl Inventory{% endblock %}
 {% block content %}
-<h1>Purchase Order Import Review</h1>
-<p class="subtitle">Staged orders only -- nothing here has been posted to the official PO ledger, inventory, or commitments yet.</p>
+<div class="page-header">
+  <div><div class="eyebrow">PO imports / batch {{ batch.batch_id }}</div><h1>Review purchase orders</h1><p class="subtitle">Assign a Drizzl source and review exceptions before creating official commitments. Existing duplicates are safely excluded.</p></div>
+  <a href="{{ url_for('po_import') }}">&larr; All PO imports</a>
+</div>
 
-<div class="panel">
-  <p class="subtitle" style="margin:0 0 6px;">
-    File: <strong>{{ batch.source_filename }}</strong> &middot;
-    Customer: <strong>{{ batch.customer_name }}</strong> &middot;
-    Uploaded: {{ batch.created_at }}
-  </p>
-  <p class="subtitle" style="margin:0;">
-    Orders: <strong>{{ summary.orders }}</strong> &middot;
-    Lines: <strong>{{ summary.lines }}</strong> &middot;
-    <span class="badge badge-ready">Ready {{ summary.ready }}</span>
-    <span class="badge badge-needs_source">Needs source {{ summary.needs_source }}</span>
-    <span class="badge badge-blocked">Blocked {{ summary.blocked }}</span>
-    <span class="badge badge-posted">Posted {{ summary.posted }}</span>
-  </p>
+<div class="panel toolbar">
+  <div><div class="cell-primary">{{ batch.source_filename }}</div><div class="cell-secondary">{{ batch.customer_name }} &middot; Uploaded {{ batch.created_at }} &middot; {{ summary.lines }} normalized lines</div></div>
+  <form method="post" action="{{ url_for('revalidate_po_batch_route', batch_id=batch.batch_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Revalidate product mappings</button>
+  </form>
+</div>
+
+<div class="metrics">
+  <div class="metric"><span class="metric-label">Total orders</span><strong class="metric-value">{{ summary.orders }}</strong></div>
+  <div class="metric metric-success"><span class="metric-label">Ready</span><strong class="metric-value">{{ summary.ready }}</strong></div>
+  <div class="metric metric-warning"><span class="metric-label">Needs source</span><strong class="metric-value">{{ summary.needs_source }}</strong></div>
+  <div class="metric metric-error"><span class="metric-label">Blocked / review</span><strong class="metric-value">{{ summary.blocked + summary.review_required }}</strong></div>
+  <div class="metric metric-warning"><span class="metric-label">Duplicates</span><strong class="metric-value">{{ summary.exact_duplicate + summary.reviewed_duplicate }}</strong></div>
+  <div class="metric"><span class="metric-label">Posted</span><strong class="metric-value">{{ summary.posted }}</strong></div>
 </div>
 
 {% if not staged_pos %}
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Purchase orders in this batch</h2><span class="subtitle" style="margin:0;">Statuses appear directly beneath each PO number.</span></div>
   <p class="empty">No purchase orders in this batch.</p>
 </div>
 {% else %}
@@ -32,29 +35,32 @@
 </div>
 {% endif %}
 
-<div class="panel">
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Purchase orders in this batch</h2><span class="subtitle" style="margin:0;">Statuses appear directly beneath each PO number.</span></div>
   <div class="table-scroll">
   <table>
     <tr>
-      <th><input type="checkbox" id="select-all" {{ "disabled" if not all_locations }}></th>
-      <th>PO Number</th>
-      <th>Customer</th>
+      <th><input type="checkbox" id="select-all" {{ "disabled" if not all_locations or not (summary.ready or summary.needs_source or summary.blocked) }}></th>
+      <th>PO number</th>
       <th>Destination</th>
       <th>Lines</th>
-      <th>Ordered Qty</th>
-      <th>Drizzl Source</th>
-      <th>Status</th>
+      <th>Ordered qty</th>
+      <th>Drizzl source</th>
       <th></th>
     </tr>
     {% for po in staged_pos %}
     <tr>
       <td>
-        {% if po.review_status != "posted" and all_locations %}
+        {% if po.review_status in ("ready", "needs_source", "blocked") and all_locations %}
         <input type="checkbox" name="staged_po_ids" value="{{ po.staged_po_id }}" form="bulk-assign-form" class="po-checkbox" data-status="{{ po.review_status }}">
         {% endif %}
       </td>
-      <td><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">{{ po.external_po_number }}</a></td>
-      <td>{{ batch.customer_name }}</td>
+      <td>
+        <a class="cell-primary" href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">{{ po.external_po_number }}</a>
+        <div style="margin-top:4px;"><span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span></div>
+        {% if po.review_status == "posted" %}<div class="cell-secondary"><a href="{{ url_for('lookup', q=po.external_po_number) }}">Official PO #{{ po.posted_po_id }}</a></div>
+        {% elif po.review_status in ("exact_duplicate", "review_required", "reviewed_duplicate") %}<div class="cell-secondary"><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">Compare with PO #{{ po.official_po_id }}</a></div>{% endif %}
+      </td>
       <td>{{ po.destination_facility_name or "" }}{% if po.destination_city %}, {{ po.destination_city }}{% endif %}</td>
       <td>{{ po.line_count }} line{{ "s" if po.line_count != 1 }}</td>
       <td>{{ "%.0f"|format(po.total_ordered_qty) }} units</td>
@@ -64,24 +70,18 @@
         {% else %}
         <span class="badge">Not assigned</span>
         {% endif %}
-        {% if po.review_status != "posted" and all_locations %}
+        {% if po.review_status in ("ready", "needs_source", "blocked") and all_locations %}
         <form method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" style="display:inline-flex; gap:4px; margin-top:4px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="staged_po_ids" value="{{ po.staged_po_id }}">
           <select name="source_location_id" style="width:130px; padding:4px 6px;">
-            <option value="">{{ "change to..." if po.source_location_name else "choose..." }}</option>
+            <option value="">{{ "Change to..." if po.source_location_name else "Choose..." }}</option>
             {% for l in all_locations %}
             <option value="{{ l.id }}">{{ l.name }}</option>
             {% endfor %}
           </select>
           <button type="submit" class="link">Set</button>
         </form>
-        {% endif %}
-      </td>
-      <td>
-        <span class="badge badge-{{ po.review_status }}">{{ po.review_status.replace("_", " ")|upper }}</span>
-        {% if po.review_status == "posted" %}
-        <div><a href="{{ url_for('lookup', q=po.external_po_number) }}" style="font-size:0.78rem;">Official PO #{{ po.posted_po_id }}</a></div>
         {% endif %}
       </td>
       <td><a href="{{ url_for('staged_po_detail', batch_id=batch.batch_id, staged_po_id=po.staged_po_id) }}">View</a></td>
@@ -91,30 +91,34 @@
   </div>
 </div>
 
-{% if all_locations %}
-<form id="bulk-assign-form" method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" class="panel row" style="align-items:flex-end;">
+{% if all_locations and (summary.ready or summary.needs_source or summary.blocked) %}
+<form id="bulk-assign-form" method="post" action="{{ url_for('assign_staged_source', batch_id=batch.batch_id) }}" class="panel toolbar">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="field" style="max-width:240px; margin-bottom:0;">
     <label for="bulk_location">Assign selected to</label>
     <select name="source_location_id" id="bulk_location">
-      <option value="">choose warehouse&hellip;</option>
+      <option value="">Choose warehouse&hellip;</option>
       {% for l in all_locations %}
       <option value="{{ l.id }}">{{ l.name }}</option>
       {% endfor %}
     </select>
   </div>
-  <button type="submit">Apply to Selected</button>
+  <button type="submit">Apply to selected</button>
 </form>
 
 {% if summary.ready %}
-<div class="panel">
-  <p class="subtitle" style="margin:0 0 10px;">
-    Posting creates official PO records and commitments in the ledger. It does not move physical inventory.
-  </p>
+<div class="panel sticky-actions">
+  <div>
+    <p class="subtitle">Posting creates official PO commitments. It does not move physical inventory.</p>
+    {% if summary.blocked %}
+    <p style="margin:6px 0 0; color:#ffe2a8; font-weight:700;">{{ summary.blocked }} blocked order{{ "s" if summary.blocked != 1 }} will not be posted.</p>
+    {% endif %}
+  </div>
   <form id="post-form" method="post" action="{{ url_for('post_staged_pos', batch_id=batch.batch_id) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   </form>
-  <button type="button" id="post-selected-btn">Post Selected Ready Orders</button>
+  <button type="button" id="post-all-new-btn">Post all new orders ({{ summary.ready }})</button>
+  <button type="button" id="post-selected-btn">Post selected ready orders</button>
 </div>
 {% endif %}
 
@@ -124,6 +128,30 @@
   });
 
   var postBtn = document.getElementById("post-selected-btn");
+  function submitReady(ready, message) {
+    if (ready.length === 0) {
+      alert("There are no READY new purchase orders to post.");
+      return;
+    }
+    if (!confirm(message)) return;
+    var form = document.getElementById("post-form");
+    form.querySelectorAll("input[name='staged_po_ids']").forEach(function (i) { i.remove(); });
+    ready.forEach(function (cb) {
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "staged_po_ids";
+      input.value = cb.value;
+      form.appendChild(input);
+    });
+    form.submit();
+  }
+  var postAllBtn = document.getElementById("post-all-new-btn");
+  if (postAllBtn) {
+    postAllBtn.addEventListener("click", function () {
+      var ready = Array.from(document.querySelectorAll(".po-checkbox")).filter(function (cb) { return cb.dataset.status === "ready"; });
+      submitReady(ready, "Post all " + ready.length + " new READY order(s)? Existing duplicates and review items will stay out of the posting.");
+    });
+  }
   if (postBtn) {
     postBtn.addEventListener("click", function () {
       var checked = Array.from(document.querySelectorAll(".po-checkbox:checked"));
@@ -138,18 +166,7 @@
         msg += " (" + skipped + " selected order(s) that aren't READY will be left out.)";
       }
       msg += " This creates official PO records and commitments -- it does not move physical inventory.";
-      if (!confirm(msg)) return;
-
-      var form = document.getElementById("post-form");
-      form.querySelectorAll("input[name='staged_po_ids']").forEach(function (i) { i.remove(); });
-      ready.forEach(function (cb) {
-        var input = document.createElement("input");
-        input.type = "hidden";
-        input.name = "staged_po_ids";
-        input.value = cb.value;
-        form.appendChild(input);
-      });
-      form.submit();
+      submitReady(ready, msg);
     });
   }
 </script>

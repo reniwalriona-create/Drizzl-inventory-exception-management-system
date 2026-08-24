@@ -1,6 +1,6 @@
 """
-Verifies the Phase 3 PO CSV staging infrastructure against the real
-drizzl_inventory database, via db.get_connection(). Uses the real Scootsy
+Verifies the Phase 3 PO CSV staging infrastructure against a disposable
+PostgreSQL database. Uses the real Scootsy
 PO export (PO_0000000000001.csv) for the primary checks, plus synthetic
 CSV fixtures (written to the scratchpad dir) for the controlled edge-case
 tests. All database writes happen inside SAVEPOINTs and are rolled back --
@@ -20,6 +20,9 @@ import psycopg2.errors
 import catalog
 import po_csv_staging as staging
 from db import get_connection
+from verify_db import bootstrap_connection, create_database, drop_database
+
+TEST_DB_NAME = "drizzl_inventory_test_po_staging"
 
 REAL_CSV_PATH = Path("/Users/demo/Desktop/Swiggy test PO GRN data/last 7 po csv/PO_0000000000001.csv")
 SCOOTSY_NAME = "Scootsy Logistics Private Limited"
@@ -236,6 +239,32 @@ def check_unknown_sku(conn, failures):
             failures.append(f"  unknown SKU: expected an 'unmapped_customer_sku' validation error, got {line['validation_errors']}")
         if po is None or po["validation_status"] != "blocked":
             failures.append(f"  unknown SKU: expected the staged PO itself to be blocked, got {dict(po) if po else None}")
+
+        # A human may add the missing mapping from the terminal. The same
+        # staged batch must then be revalidatable without re-uploading or
+        # creating any Master Product automatically.
+        product = catalog.get_master_product_by_barcode(conn, "9000000000001")
+        catalog.add_customer_sku_mapping(
+            conn, get_scootsy_id(conn), product["product_id"], "UNKNOWN-SKU-9999"
+        )
+        staging.revalidate_product_mappings(conn, result["batch_id"])
+        revalidated_line = conn.execute(
+            "SELECT product_id, validation_status, validation_errors FROM staged_po_lines "
+            "WHERE staged_po_id = (SELECT staged_po_id FROM staged_purchase_orders WHERE batch_id = ?)",
+            (result["batch_id"],),
+        ).fetchone()
+        revalidated_po = conn.execute(
+            "SELECT validation_status FROM staged_purchase_orders WHERE batch_id = ?",
+            (result["batch_id"],),
+        ).fetchone()
+        if (
+            revalidated_line["product_id"] != product["product_id"]
+            or revalidated_line["validation_status"] != "valid"
+            or revalidated_line["validation_errors"]
+        ):
+            failures.append(f"  unknown SKU: mapping revalidation did not resolve the staged line: {dict(revalidated_line)}")
+        if revalidated_po["validation_status"] != "valid":
+            failures.append(f"  unknown SKU: mapping revalidation did not unblock the staged PO: {dict(revalidated_po)}")
     finally:
         conn.execute("ROLLBACK TO SAVEPOINT unknown_sku_check")
 
@@ -373,23 +402,26 @@ def check_no_residue(conn, failures):
 
 
 def run():
-    conn = get_connection()
+    create_database(TEST_DB_NAME)
+    conn = bootstrap_connection(TEST_DB_NAME)
     failures = []
-    scootsy_id = get_scootsy_id(conn)
-    if scootsy_id is None:
-        print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
-        return False
+    try:
+        scootsy_id = get_scootsy_id(conn)
+        if scootsy_id is None:
+            print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
+            return False
 
-    check_real_file(conn, failures)
-    check_unknown_sku(conn, failures)
-    check_malformed_quantity(conn, failures)
-    check_inconsistent_po_metadata(conn, failures)
-    check_wrong_customer_fatal(conn, failures)
-    check_extra_unknown_column(conn, failures)
-    check_missing_optional_column(conn, failures)
-    check_no_residue(conn, failures)
-
-    conn.close()
+        check_real_file(conn, failures)
+        check_unknown_sku(conn, failures)
+        check_malformed_quantity(conn, failures)
+        check_inconsistent_po_metadata(conn, failures)
+        check_wrong_customer_fatal(conn, failures)
+        check_extra_unknown_column(conn, failures)
+        check_missing_optional_column(conn, failures)
+        check_no_residue(conn, failures)
+    finally:
+        conn.close()
+        drop_database(TEST_DB_NAME)
 
     if any("FATAL" in f for f in failures):
         print("STOPPED:")

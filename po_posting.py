@@ -29,6 +29,8 @@ staged CSV PO is always a plain INSERT of a brand-new official record,
 never an UPSERT/replace of an existing one.
 """
 
+from decimal import Decimal, InvalidOperation
+
 
 class PostingError(Exception):
     """Raised for a malformed request itself (unknown staged_po_id,
@@ -101,31 +103,134 @@ def _readiness_failures(conn, staged_po, lines):
     return reasons
 
 
+def _value(value, numeric=False):
+    if value is None or value == "":
+        return None
+    if numeric:
+        try:
+            return Decimal(str(value)).quantize(Decimal("0.0001"))
+        except (InvalidOperation, ValueError):
+            return str(value).strip()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def _material_snapshot(conn, staged_po, official_po=None):
+    """Canonical business content used only for duplicate comparison.
+
+    Volatile export metadata (created/modified/status), received/balanced
+    quantities, and Drizzl source assignment are intentionally excluded.
+    """
+    if official_po is None:
+        lines = _staged_lines(conn, staged_po["staged_po_id"])
+        header = {
+            "Destination facility ID": _value(staged_po["destination_facility_id"]),
+            "Destination facility": _value(staged_po["destination_facility_name"]),
+            "Destination city": _value(staged_po["destination_city"]),
+            "Expected delivery": _value(staged_po["expected_delivery_date"]),
+            "PO expiry": _value(staged_po["po_expiry_date"]),
+            "PO amount": _value(staged_po["po_amount"], True),
+            "Vendor": _value(staged_po["vendor_name"]),
+            "Supplier code": _value(staged_po["supplier_code"]),
+        }
+        material_lines = [(
+            _value(line["product_id"]), _value(line["external_sku"]),
+            _value(line["ordered_qty"], True), _value(line["mrp"], True),
+            _value(line["unit_based_cost"], True),
+            _value(line["line_value_without_tax"], True),
+            _value(line["line_value_with_tax"], True), _value(line["tax"], True),
+        ) for line in lines]
+    else:
+        lines = conn.execute(
+            "SELECT * FROM po_line_items WHERE po_number = ? ORDER BY id",
+            (official_po["po_number"],),
+        ).fetchall()
+        header = {
+            "Destination facility ID": _value(official_po["destination_facility_id"]),
+            "Destination facility": _value(official_po["destination_facility_name"] or official_po["facility_name"]),
+            "Destination city": _value(official_po["destination_city"]),
+            "Expected delivery": _value(official_po["expected_delivery_date"]),
+            "PO expiry": _value(official_po["po_expiry_date"]),
+            "PO amount": _value(official_po["grand_total"], True),
+            "Vendor": _value(official_po["vendor_name"]),
+            "Supplier code": _value(official_po["supplier_code"]),
+        }
+        material_lines = [(
+            _value(line["product_id"]), _value(line["external_sku"] or line["item_code"]),
+            _value(line["qty"], True), _value(line["mrp"], True),
+            _value(line["unit_base_cost"], True), _value(line["taxable_value"], True),
+            _value(line["total"], True), _value(line["external_tax_amount"], True),
+        ) for line in lines]
+    return header, sorted(material_lines, key=lambda line: tuple("" if v is None else str(v) for v in line))
+
+
+def classify_existing_po(conn, staged_po):
+    """Classify a staged PO against the official ledger, with differences."""
+    existing = conn.execute(
+        "SELECT * FROM purchase_orders WHERE po_number = ?",
+        (staged_po["external_po_number"],),
+    ).fetchone()
+    if existing is None:
+        return {"kind": "new", "official_po_id": None, "differences": []}
+    if existing["customer_id"] != staged_po["customer_id"]:
+        return {"kind": "cross_customer_conflict", "official_po_id": existing["po_id"], "differences": []}
+
+    staged_header, staged_lines = _material_snapshot(conn, staged_po)
+    official_header, official_lines = _material_snapshot(conn, staged_po, existing)
+    differences = []
+    for label in staged_header:
+        if staged_header[label] != official_header[label]:
+            differences.append({"field": label, "official": official_header[label], "uploaded": staged_header[label]})
+    if staged_lines != official_lines:
+        differences.append({
+            "field": "Product lines",
+            "official": f"{len(official_lines)} line(s)",
+            "uploaded": f"{len(staged_lines)} line(s); product, quantity, or price differs",
+        })
+    if not differences:
+        kind = "exact_duplicate"
+    elif staged_po.get("duplicate_disposition") and staged_po.get("duplicate_official_po_id") == existing["po_id"]:
+        kind = "reviewed_duplicate"
+    else:
+        kind = "review_required"
+    return {"kind": kind, "official_po_id": existing["po_id"], "differences": differences}
+
+
+def record_duplicate_decision(conn, staged_po_id, disposition, reason):
+    if disposition not in {"keep_existing", "treat_as_duplicate"}:
+        raise PostingError("Invalid duplicate review decision.")
+    if not (reason or "").strip():
+        raise PostingError("Enter a reason for the duplicate review decision.")
+    staged = conn.execute("SELECT * FROM staged_purchase_orders WHERE staged_po_id = ?", (staged_po_id,)).fetchone()
+    if staged is None:
+        raise PostingError("This staged purchase order does not exist.")
+    classification = classify_existing_po(conn, dict(staged))
+    if classification["kind"] not in {"review_required", "reviewed_duplicate"}:
+        raise PostingError("This purchase order does not currently require duplicate review.")
+    conn.execute(
+        """UPDATE staged_purchase_orders
+           SET duplicate_disposition = ?, duplicate_review_reason = ?,
+               duplicate_official_po_id = ?, duplicate_reviewed_at = CURRENT_TIMESTAMP
+           WHERE staged_po_id = ?""",
+        (disposition, reason.strip(), classification["official_po_id"], staged_po_id),
+    )
+    return classification["official_po_id"]
+
+
 def _conflict_failures(conn, staged_po):
     """Pre-insert conflict detection -- translates what would otherwise be
     a raw UNIQUE-violation exception (or, worse, a silent overwrite) into a
     clear business reason. Returns a list of reason strings."""
     reasons = []
-    existing = conn.execute(
-        "SELECT po_id, customer_id FROM purchase_orders WHERE po_number = ?",
-        (staged_po["external_po_number"],),
-    ).fetchone()
-    if existing is not None:
-        if existing["customer_id"] == staged_po["customer_id"]:
-            reasons.append(
-                f"an official PO {staged_po['external_po_number']!r} already exists (po_id "
-                f"{existing['po_id']}) and is not linked to this staged record -- looks like a "
-                "duplicate/revised staging of an already-posted PO. Posting does not overwrite "
-                "an existing official PO; this needs the (not-yet-built) duplicate/revision "
-                "review workflow."
-            )
-        else:
-            reasons.append(
+    classification = classify_existing_po(conn, staged_po)
+    if classification["kind"] == "cross_customer_conflict":
+        reasons.append(
                 f"PO number {staged_po['external_po_number']!r} is already used by another "
                 "customer's official PO. purchase_orders.po_number is still globally unique "
                 "(temporary Phase 2 compatibility scaffolding) until the remaining child tables "
                 "migrate to po_id -- this is a known, temporary limitation, not a bug."
-            )
+        )
     return reasons
 
 
@@ -234,12 +339,22 @@ def post_staged_purchase_orders(conn, batch_id, staged_po_ids):
     selection = _load_selection(conn, batch_id, staged_po_ids)
 
     already_posted = []
+    skipped_existing = []
     to_post = []
     for staged_po in selection:
         if staged_po["posted_po_id"] is not None:
             already_posted.append(staged_po)
         else:
-            to_post.append(staged_po)
+            classification = classify_existing_po(conn, staged_po)
+            if classification["kind"] in {"exact_duplicate", "review_required", "reviewed_duplicate"}:
+                skipped_existing.append({
+                    "staged_po_id": staged_po["staged_po_id"],
+                    "po_number": staged_po["external_po_number"],
+                    "po_id": classification["official_po_id"],
+                    "status": classification["kind"],
+                })
+            else:
+                to_post.append(staged_po)
 
     rejected = {}
     lines_by_staged_po = {}
@@ -253,7 +368,7 @@ def post_staged_purchase_orders(conn, batch_id, staged_po_ids):
             rejected[staged_po["staged_po_id"]] = reasons
 
     if rejected:
-        return {"posted": [], "already_posted": [], "rejected": rejected}
+        return {"posted": [], "already_posted": [], "skipped_existing": skipped_existing, "rejected": rejected}
 
     posted = []
     for staged_po in to_post:
@@ -272,4 +387,4 @@ def post_staged_purchase_orders(conn, batch_id, staged_po_ids):
         }
         for p in already_posted
     ]
-    return {"posted": posted, "already_posted": already_posted_out, "rejected": {}}
+    return {"posted": posted, "already_posted": already_posted_out, "skipped_existing": skipped_existing, "rejected": {}}

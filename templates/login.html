@@ -2,7 +2,7 @@
 {% block title %}Log in - Drizzl Inventory{% endblock %}
 {% block content %}
 <div class="panel" style="max-width:340px; margin:40px auto 0;">
-  <h1 style="margin-top:0;">Log in</h1>
+  <div class="eyebrow">Drizzl Inventory</div><h1 style="margin:5px 0 8px;">Welcome back</h1><p class="subtitle">Log in to manage inventory and documents.</p>
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
@@ -13,7 +13,7 @@
       <label for="password">Password</label>
       <input type="password" name="password" id="password" required>
     </div>
-    <button type="submit">Log in</button>
+    <button type="submit" style="width:100%;">Log in</button>
   </form>
 </div>
 {% endblock %}

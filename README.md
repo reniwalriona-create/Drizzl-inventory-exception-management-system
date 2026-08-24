@@ -1,6 +1,6 @@
 # Drizzl Inventory Management System
 
-> An internal inventory ledger and B2B document-reconciliation system built for **Drizzl**, a probiotic soda brand — evolved over eleven engineering phases from a single-customer PDF-parsing prototype into a canonical-identity, staging-then-posting inventory platform with a correction/audit trail.
+> An internal inventory ledger and B2B document-reconciliation system built for **Drizzl**, a probiotic soda brand — evolved over thirteen engineering phases from a single-customer parsing prototype into a canonical-identity, staging-then-posting inventory platform with a correction/audit trail.
 
 **Stack:** Python · Flask · PostgreSQL · Werkzeug/Flask-Login · Flask-WTF
 **Focus:** inventory-ledger design, B2B document reconciliation, canonical product identity, and the operational discipline (staging, atomic posting, void/supersede) that keeps a real business's numbers trustworthy.
@@ -19,7 +19,7 @@ GRN CSV →  normalized + quarantined if it conflicts  →  official GRN  →  S
                                                                    PO commitment closes
 ```
 
-- **Purchase Orders** arrive as a CSV export (also: single-PDF POs, still supported for the legacy path). A PO never moves physical inventory by itself — it creates a **commitment**, reserving stock against a future delivery.
+- **Purchase Orders** arrive as a CSV export. A PO never moves physical inventory by itself — it creates a **commitment**, reserving stock against a future delivery.
 - **GRNs** (Goods Receipt Notes) arrive the same way and represent what was *actually* received. Only the received quantity ever becomes a sale — never the ordered quantity. Posting a GRN closes its PO's commitment in full and reduces on-hand inventory by exactly the normalized received quantity, once, per line.
 - **Discrepancy** (ordered − received) is never uploaded as its own document — it's computed fresh, on demand, from the two official records that already exist. A discrepancy is informational until a human decides what it means; nothing writes off a loss automatically.
 - **Corrections never edit history.** A wrong PO source or a wrong GRN gets void/restore or void+replace treatment — the original row stays in the database, marked voided (and, for a replaced GRN, linked to its replacement via `supersedes_grn_id`), forever inspectable.
@@ -41,7 +41,8 @@ GRN CSV →  normalized + quarantined if it conflicts  →  official GRN  →  S
 ## Important engineering decisions
 
 - **Customer SKU ≠ product identity** — see "canonical Master Product identity" above. This was the single decision that shaped everything downstream of it.
-- **`product_id`-based inventory, not SKU-string-based** — canonical stock, commitment, and discrepancy calculations all key on `product_id`; the legacy SKU-string path (still active for single-PDF PO/GRN uploads) is kept structurally separate so the two can never silently collide.
+- **`product_id`-based inventory, not SKU-string-based** — stock, commitments, manual movements, dashboard filters, damage reporting, and discrepancy calculations key on the Master Product. Customer SKUs and barcodes are references, never separate inventory pools.
+- **Unknown customer SKUs block posting** — they never create a product or inventory row. Add the mapping manually, then use the PO batch's “Revalidate Master Product mappings” action.
 - **Staging before ledger writes** — nothing from an uploaded file can touch physical inventory numbers until a human has reviewed it and explicitly posted it.
 - **Void/supersede instead of delete** — a mistaken document, movement, or PO-source assignment is never removed; it's voided (with a required reason) and, for a GRN correction, explicitly linked to whatever replaced it. A superseded record can never be resurrected through a generic "restore" — only through another explicit correction.
 - **Negative inventory is allowed, on purpose** — a GRN is a real document; if honoring it makes a balance go negative, that's surfaced as a flag for a human to investigate (usually a missing upstream movement), not silently blocked or hidden.
@@ -121,7 +122,7 @@ config.py                Environment-driven configuration (secrets, database URL
 db.py                    Postgres connection handling, schema bootstrap, seed data
 create_user.py            CLI to create/reset a login (no self-registration UI)
 
-ingest.py                 Legacy single-PDF PO/GRN ingestion, void/restore, manual movements
+ingest.py                 Ledger writes, void/restore, and dormant CLI-only legacy helpers
 po_csv_staging.py         PO CSV → staged_purchase_orders (raw → normalized, never posts)
 po_posting.py             staged_purchase_orders → official purchase_orders (atomic, idempotent)
 grn_csv_staging.py        GRN CSV → staged_grns (normalization, duplicate/PO-verification checks)
@@ -131,10 +132,10 @@ catalog.py                Master Product / customer-SKU mapping lookups
 reconcile.py               All read-side calculations: stock, commitment, discrepancy, lookup
 validate.py                 Per-document-type sanity checks, logged as ingestion flags
 
-po_parser.py / grn_parser.py / debit_note_parser.py    PDF text extraction
+po_parser.py / grn_parser.py / debit_note_parser.py    Dormant CLI/parser fixtures; not web routes
 templates/ + static/        Flask UI (server-rendered, no JS framework)
 
-migrations/                 001–010, applied in order, each idempotent
+migrations/                 001–011, applied in order, each idempotent
 schema_postgres.sql         The current canonical schema (fresh-install target)
 
 verify_*.py                  One suite per phase/subsystem (see below)
@@ -144,7 +145,7 @@ verify_system_integrity.py     Read-only invariant audit of the live database
 
 ## Verification
 
-Each `verify_*.py` file is a self-contained regression suite for one phase or subsystem — most create and drop their own disposable Postgres database, so they never touch real data. Together they're also a record of how the architecture evolved: `verify_product_identity.py` and `verify_po_identity.py` prove the canonical-ID foundation from Phases 1–2; `verify_po_posting.py`/`verify_grn_posting.py` prove atomic posting from Phases 5/8; `verify_grn_correction.py` proves the void/supersede correction workflow from Phase 10; `verify_security.py` proves auth and CSRF from Phase 12.
+Each mutating `verify_*.py` suite creates and drops its own disposable Postgres database, so automated tests never touch development data. `verify_system_integrity.py` is the one intentional exception: it is strictly read-only and audits the selected live database. `verify_canonical_manual_movements.py` proves that manual entries cannot bypass Master Products.
 
 ```bash
 ./.venv/bin/python verify_all.py          # everything, one summary

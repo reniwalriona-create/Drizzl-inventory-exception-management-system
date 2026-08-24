@@ -1,12 +1,14 @@
 """
-Flask web app: upload page for PO/GRN/Debit Note documents,
-a dashboard built on reconcile.py's reports, and a manual movement form
+Flask web app: staged CSV intake for POs/GRNs,
+a dashboard built on reconcile.py's reports, and a Master-Product-only manual movement form
 -- the only way to capture undocumented events (flea markets, transfers,
 production) that no document exists for.
 """
 import logging
 import os
+import re
 import secrets
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
@@ -24,6 +26,8 @@ from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
 import config
+import catalog
+import discrepancy_csv_staging
 import grn_csv_staging
 import grn_posting
 import po_csv_staging
@@ -31,7 +35,6 @@ import po_posting
 import reconcile
 from activity_log import log_activity, recent_activity
 from db import get_connection
-from grn_parser import parse_grn_pdf
 from ingest import (
     assign_grn_source_location,
     assign_po_source_location,
@@ -41,13 +44,10 @@ from ingest import (
     unvoid_grn,
     unvoid_movement,
     unvoid_po,
-    upsert_grn,
-    upsert_po,
     void_grn,
     void_movement,
     void_po,
 )
-from po_parser import parse_po_pdf
 
 # Debit Notes and Appointment slots are deliberately NOT wired into the web
 # app for now (MVP is PO -> GRN -> canonical PO-vs-GRN discrepancy
@@ -74,6 +74,34 @@ app = Flask(__name__)
 # labeled dev-only default (Phase 12).
 app.secret_key = config.SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_BYTES
+
+
+@app.template_filter("product_label")
+def product_label(value):
+    """Short UI-only Master Product name; canonical data stays unchanged."""
+    label = (value or "").strip()
+    if label.lower().startswith("drizzl "):
+        label = label[7:]
+    sparkling_prefix = "Probiotic Sparkling Water - "
+    if label.startswith(sparkling_prefix):
+        label = f"{label[len(sparkling_prefix):]} Sparkling Water"
+    return label
+
+
+@app.template_filter("compact_product_text")
+def compact_product_text(value):
+    """Remove product-brand, barcode and size noise from mixed UI text."""
+    text = value or ""
+    text = re.sub(r"\bDrizzl\s+", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"Probiotic Sparkling Water\s*-\s*([A-Za-z &]+)",
+        lambda match: f"{match.group(1).strip()} Sparkling Water",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s*\(?\b\d{12,13}\b\)?", "", text)
+    text = re.sub(r"\s*[—|-]?\s*\d+(?:\.\d+)?\s*ml\b", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 # CSRF protection (Phase 12) -- Flask-WTF's standard app-wide guard.
 # Every POST/PUT/PATCH/DELETE request must carry a valid csrf_token
@@ -111,22 +139,36 @@ def load_user(user_id):
     finally:
         conn.close()
 
-# (label, accepted file extension) -- drives both the upload form's
-# dropdown and which parser/ingest function handles the file.
-DOC_TYPES = {
-    "po": ("Purchase Order (PDF)", ".pdf"),
-    "grn": ("GRN (PDF)", ".pdf"),
-}
-
 MOVEMENT_TYPES = ["production", "opening_balance", "transfer", "sale", "loss"]
 LOCATION_TYPES = ["own_facility", "consignment_partner", "market_event"]
 
 
-def _build_chart_data(conn, location, sku_code, damaged_by_cause):
+def _date_filter_args():
+    preset = request.args.get("period", "all")
+    today = date.today()
+    if preset == "7d":
+        return preset, (today - timedelta(days=6)).isoformat(), today.isoformat()
+    if preset == "30d":
+        return preset, (today - timedelta(days=29)).isoformat(), today.isoformat()
+    if preset == "month":
+        return preset, today.replace(day=1).isoformat(), today.isoformat()
+    if preset == "custom":
+        values = []
+        for name in ("date_from", "date_to"):
+            raw = request.args.get(name, "")
+            try:
+                values.append(datetime.strptime(raw, "%Y-%m-%d").date().isoformat() if raw else None)
+            except ValueError:
+                values.append(None)
+        return preset, values[0], values[1]
+    return "all", None, None
+
+
+def _build_chart_data(conn, location, product_id, damaged_by_cause, date_from=None, date_to=None):
     """Pivots reconcile.py's flat query results into the label/dataset
     shape Chart.js wants. Kept as plain dicts/lists (not sqlite3.Row) so
     Jinja's |tojson filter can serialize them directly."""
-    stock_rows = reconcile.stock_by_flavor(conn, location=location, sku_code=sku_code)
+    stock_rows = reconcile.stock_by_flavor(conn, location=location, product_id=product_id)
     stock_flavors = sorted({r["flavor"] for r in stock_rows})
     stock_locations = sorted({r["location"] for r in stock_rows})
     stock_chart = {
@@ -143,13 +185,13 @@ def _build_chart_data(conn, location, sku_code, damaged_by_cause):
         ],
     }
 
-    po_facility_rows = reconcile.po_quantity_by_facility(conn, sku_code=sku_code)
+    po_facility_rows = reconcile.po_quantity_by_facility(conn, product_id=product_id, date_from=date_from, date_to=date_to)
     po_facility_chart = {
         "labels": [r["facility"] for r in po_facility_rows],
         "data": [r["total_qty"] for r in po_facility_rows],
     }
 
-    damage_trend_rows = reconcile.damage_trend_over_time(conn, sku_code=sku_code, location=location)
+    damage_trend_rows = reconcile.damage_trend_over_time(conn, product_id=product_id, location=location, date_from=date_from, date_to=date_to)
     damage_trend_chart = {
         "labels": [r["date"] for r in damage_trend_rows],
         "data": [r["qty"] for r in damage_trend_rows],
@@ -160,7 +202,7 @@ def _build_chart_data(conn, location, sku_code, damaged_by_cause):
         "data": [r["total_damaged"] for r in damaged_by_cause],
     }
 
-    flavor_rows = reconcile.po_quantity_by_flavor(conn)
+    flavor_rows = reconcile.po_quantity_by_flavor(conn, date_from=date_from, date_to=date_to)
     flavor_popularity_chart = {
         "labels": [r["flavor"] for r in flavor_rows],
         "data": [r["total_qty"] for r in flavor_rows],
@@ -247,37 +289,56 @@ def dashboard():
     conn = get_connection()
     try:
         location = request.args.get("location") or None
-        sku_code = request.args.get("sku") or None
+        product_id = request.args.get("product") or None
+        if product_id:
+            try:
+                product_id = int(product_id)
+            except ValueError:
+                product_id = None
         facility = request.args.get("facility") or None
 
         # Never filtered, never hidden -- a negative balance is a real
-        # bookkeeping problem regardless of what the location/SKU filter
+        # bookkeeping problem regardless of what the location/product filter
         # above happens to be set to.
-        negatives = [
-            {**dict(n), "recent": reconcile.movements_for_location_sku(conn, n["location"], n["sku_code"], limit=5)}
-            for n in reconcile.negative_balances(conn)
-        ]
+        negatives = []
+        for n in reconcile.negative_balances(conn):
+            recent = (
+                reconcile.movements_for_location_product(conn, n["location"], n["product_id"], limit=5)
+                if n["product_id"] is not None
+                else reconcile.movements_for_location_sku(conn, n["location"], n["sku_code"], limit=5)
+            )
+            negatives.append({**dict(n), "recent": recent})
+
+        stock_rows = reconcile.stock_by_location(conn, location=location, product_id=product_id)
+
+        fulfillment_rows = reconcile.po_grn_fulfillment(conn)
+        po_counts = {
+            "total": sum(r["fulfillment_status"] != "voided" for r in fulfillment_rows),
+            "fulfilled": sum(r["fulfillment_status"] in {"grn_posted", "grn_posted_discrepancy"} for r in fulfillment_rows),
+            "awaiting": sum(r["fulfillment_status"] == "awaiting_grn" for r in fulfillment_rows),
+        }
 
         return render_template(
             "dashboard.html",
-            stock=reconcile.stock_by_location(conn, location=location, sku_code=sku_code),
-            damaged_by_sku=reconcile.damaged_units_by_sku(conn, sku_code=sku_code, location=location),
-            damaged_by_cause=reconcile.damaged_units_by_cause(conn, sku_code=sku_code, location=location),
-            shortfall=reconcile.po_vs_received_shortfall(conn, sku_code=sku_code),
-            official_discrepancies=reconcile.official_discrepancies(conn, sku_code=sku_code),
+            stock=stock_rows,
+            damaged_by_cause=reconcile.damaged_units_by_cause(conn, product_id=product_id, location=location),
+            official_discrepancies=reconcile.official_discrepancies(conn, product_id=product_id),
             flags=reconcile.unresolved_flags(conn),
             negative_balances=negatives,
             inventory_flags=reconcile.unresolved_inventory_flags(conn),
             voided_entries=reconcile.voided_entries(conn),
             purchase_orders=reconcile.purchase_orders_by_facility(conn, facility=facility),
             unallocated_commitments=reconcile.unallocated_commitments(conn),
+            po_counts=po_counts,
             all_locations=conn.execute("SELECT name FROM locations ORDER BY name").fetchall(),
-            all_products=conn.execute("SELECT sku_code, sku_desc FROM products ORDER BY sku_code").fetchall(),
+            all_products=conn.execute(
+                "SELECT product_id, barcode, product_name FROM master_products WHERE active = TRUE ORDER BY product_name"
+            ).fetchall(),
             all_facilities=conn.execute(
                 "SELECT DISTINCT facility_name FROM purchase_orders WHERE facility_name IS NOT NULL ORDER BY facility_name"
             ).fetchall(),
             selected_location=location,
-            selected_sku=sku_code,
+            selected_product_id=product_id,
             selected_facility=facility,
         )
     finally:
@@ -289,89 +350,48 @@ def visualizations():
     conn = get_connection()
     try:
         location = request.args.get("location") or None
-        sku_code = request.args.get("sku") or None
-        damaged_by_cause = reconcile.damaged_units_by_cause(conn, sku_code=sku_code, location=location)
+        product_id = request.args.get("product") or None
+        if product_id:
+            try:
+                product_id = int(product_id)
+            except ValueError:
+                product_id = None
+        period, date_from, date_to = _date_filter_args()
+        damaged_by_cause = reconcile.damaged_units_by_cause(
+            conn, product_id=product_id, location=location, date_from=date_from, date_to=date_to
+        )
         return render_template(
             "visualizations.html",
             all_locations=conn.execute("SELECT name FROM locations ORDER BY name").fetchall(),
-            all_products=conn.execute("SELECT sku_code, sku_desc FROM products ORDER BY sku_code").fetchall(),
+            all_products=conn.execute(
+                "SELECT product_id, barcode, product_name FROM master_products WHERE active = TRUE ORDER BY product_name"
+            ).fetchall(),
             selected_location=location,
-            selected_sku=sku_code,
-            charts=_build_chart_data(conn, location, sku_code, damaged_by_cause),
+            selected_product_id=product_id,
+            period=period, date_from=date_from, date_to=date_to,
+            charts=_build_chart_data(conn, location, product_id, damaged_by_cause, date_from, date_to),
         )
     finally:
         conn.close()
 
 
-@app.route("/upload", methods=["GET", "POST"])
-def upload():
-    if request.method == "POST":
-        doc_type = request.form.get("doc_type")
-        file = request.files.get("file")
-
-        if doc_type not in DOC_TYPES:
-            flash("Choose a document type.", "error")
-            return redirect(url_for("upload"))
-        if not file or file.filename == "":
-            flash("Choose a file to upload.", "error")
-            return redirect(url_for("upload"))
-
-        original_name = secure_filename(file.filename)
-        expected_ext = DOC_TYPES[doc_type][1]
-        if not original_name.lower().endswith(expected_ext):
-            flash(f"{DOC_TYPES[doc_type][0]} expects a {expected_ext} file.", "error")
-            return redirect(url_for("upload"))
-
-        # Collision-safe stored name (Phase 12) -- matches the pattern
-        # already used by the PO/GRN CSV upload routes below. Without
-        # the random prefix, two uploads sharing a filename (a very
-        # real scenario -- "GRN.pdf" is not an unusual name) would
-        # silently overwrite each other's saved file, destroying the
-        # earlier one's audit trail even though its database row lives
-        # on. original_name (not the randomized on-disk name) is what
-        # gets stored/shown as source_file, so audit visibility is
-        # unaffected.
-        stored_name = f"doc_{secrets.token_hex(8)}_{original_name}"
-        dest = UPLOAD_DIR / stored_name
-        file.save(dest)
-
-        conn = get_connection()
-        try:
-            before = {r["id"] for r in conn.execute("SELECT id FROM ingestion_flags").fetchall()}
-
-            if doc_type == "po":
-                result = upsert_po(conn, parse_po_pdf(str(dest)), source_file=original_name)
-                msg = f"Stored PO {result}."
-                log_activity(conn, "po_upload", f"Uploaded PO {result} ({original_name})", "po", result)
-            elif doc_type == "grn":
-                result = upsert_grn(conn, parse_grn_pdf(str(dest)), source_file=original_name)
-                msg = f"Stored GRN {result}."
-                log_activity(conn, "grn_upload", f"Uploaded GRN {result} ({original_name})", "grn", result)
-
-            conn.commit()
-            flash(msg, "success")
-
-            new_flags = conn.execute(
-                "SELECT issue FROM ingestion_flags WHERE id NOT IN ({}) ".format(
-                    ",".join(str(i) for i in before) or "0"
-                )
-            ).fetchall()
-            for f in new_flags:
-                flash(f"Flagged for review: {f['issue']}", "warning")
-        except Exception:
-            conn.rollback()
-            # Never echo the raw exception to the browser -- a parser
-            # failure can include fragments of file content or a
-            # traceback with filesystem paths. Full detail goes to the
-            # server log only (Phase 12).
-            log.exception("Unexpected error processing upload %s (doc_type=%s)", original_name, doc_type)
-            flash(f"Failed to process {original_name} -- an unexpected error occurred.", "error")
-        finally:
-            conn.close()
-
-        return redirect(url_for("upload"))
-
-    return render_template("upload.html", doc_types=DOC_TYPES)
+@app.route("/po-grn-tracker")
+def po_grn_tracker():
+    allowed = {"awaiting_grn", "grn_posted", "grn_posted_discrepancy", "voided"}
+    selected_status = request.args.get("status") or None
+    if selected_status not in allowed:
+        selected_status = None
+    conn = get_connection()
+    try:
+        all_rows = reconcile.po_grn_fulfillment(conn)
+        counts = {key: sum(r["fulfillment_status"] == key for r in all_rows) for key in allowed}
+        rows = all_rows if selected_status is None else [r for r in all_rows if r["fulfillment_status"] == selected_status]
+        return render_template(
+            "po_grn_tracker.html", rows=rows, counts=counts,
+            selected_status=selected_status, total_rows=len(all_rows),
+        )
+    finally:
+        conn.close()
 
 
 @app.route("/movements/new", methods=["GET", "POST"])
@@ -381,7 +401,14 @@ def new_movement():
         pending = None
         if request.method == "POST":
             try:
-                sku_code = request.form["sku_code"].strip()
+                try:
+                    product_id = int(request.form["product_id"])
+                except (KeyError, TypeError, ValueError):
+                    raise ValueError("Choose a Master Product.")
+                product = catalog.get_master_product_by_id(conn, product_id, active_only=True)
+                if product is None:
+                    raise ValueError("That Master Product does not exist or is inactive.")
+                sku_code = product["barcode"]
                 quantity = float(request.form["quantity"])
                 if quantity <= 0:
                     raise ValueError("Quantity must be greater than zero")
@@ -439,10 +466,14 @@ def new_movement():
                 committed = uncommitted_resulting = None
                 needs_negative_check = movement_type in ("transfer", "sale", "loss")
                 if needs_negative_check:
-                    available = reconcile.current_balance(conn, location_from, sku_code)
+                    location_row = conn.execute(
+                        "SELECT id FROM locations WHERE name = ?", (location_from,)
+                    ).fetchone()
+                    location_id = location_row["id"] if location_row else None
+                    available = reconcile.current_balance_by_product(conn, location_id, product_id)
                     resulting = available - quantity
                     if resulting >= 0:
-                        committed = reconcile.committed_at_location(conn, location_from, sku_code)
+                        committed = reconcile.committed_at_location_product(conn, location_from, product_id)
                         uncommitted_resulting = resulting - committed
 
                 is_negative = needs_negative_check and resulting < 0
@@ -455,8 +486,9 @@ def new_movement():
                     pending = {
                         "severity": "negative",
                         "movement_date": request.form["movement_date"],
+                        "product_id": product_id,
+                        "product_name": product["product_name"],
                         "sku_code": sku_code,
-                        "sku_desc": request.form.get("sku_desc") or "",
                         "quantity": quantity,
                         "movement_type": movement_type,
                         "location_from": location_from or "",
@@ -472,8 +504,9 @@ def new_movement():
                     pending = {
                         "severity": "commitment",
                         "movement_date": request.form["movement_date"],
+                        "product_id": product_id,
+                        "product_name": product["product_name"],
                         "sku_code": sku_code,
-                        "sku_desc": request.form.get("sku_desc") or "",
                         "quantity": quantity,
                         "movement_type": movement_type,
                         "location_from": location_from or "",
@@ -505,6 +538,7 @@ def new_movement():
                         conn,
                         movement_date=request.form["movement_date"],
                         sku_code=sku_code,
+                        product_id=product_id,
                         movement_type=movement_type,
                         quantity=quantity,
                         location_from=location_from,
@@ -514,7 +548,6 @@ def new_movement():
                         reason=request.form.get("reason") or None,
                         reference_type="manual",
                         notes=request.form.get("notes") or None,
-                        sku_desc=request.form.get("sku_desc") or None,
                         negative_override_reason=negative_override_reason,
                         commitment_override_reason=commitment_override_reason,
                     )
@@ -524,6 +557,7 @@ def new_movement():
                             source="manual_override", available_before=available,
                             requested_qty=quantity, resulting_balance=resulting,
                             movement_id=movement_id, reason=negative_override_reason,
+                            product_id=product_id,
                         )
                     if commitment_override_reason:
                         record_inventory_flag(
@@ -532,23 +566,25 @@ def new_movement():
                             available_before=(available - committed) if available is not None else None,
                             requested_qty=quantity, resulting_balance=uncommitted_resulting,
                             movement_id=movement_id, reason=commitment_override_reason,
+                            product_id=product_id,
                         )
                     where = " -> ".join(p for p in (location_from, location_to) if p)
                     log_activity(
                         conn, "movement",
-                        f"Logged {movement_type} of {quantity:g} x {sku_code}" + (f" ({where})" if where else ""),
-                        "movement",
+                        f"Logged {movement_type} of {quantity:g} x {product['product_name']} ({sku_code})"
+                        + (f" ({where})" if where else ""),
+                        "movement", str(movement_id),
                     )
                     conn.commit()
                     if negative_override_reason:
                         flash(
-                            f"Movement recorded -- {sku_code} at {location_from} is now at {resulting:g} units. "
+                            f"Movement recorded -- {product['product_name']} at {location_from} is now at {resulting:g} units. "
                             f"Flagged for investigation.",
                             "warning",
                         )
                     elif commitment_override_reason:
                         flash(
-                            f"Movement recorded -- {sku_code} at {location_from} now has a commitment shortfall of "
+                            f"Movement recorded -- {product['product_name']} at {location_from} now has a commitment shortfall of "
                             f"{-uncommitted_resulting:g} units against an open PO. Flagged for investigation.",
                             "warning",
                         )
@@ -560,25 +596,33 @@ def new_movement():
                 flash(f"Failed to record movement: {e}", "error")
 
         products = conn.execute(
-            "SELECT sku_code, sku_desc FROM products ORDER BY sku_code"
+            "SELECT product_id, barcode, product_name, unit_size FROM master_products "
+            "WHERE active = TRUE ORDER BY product_name"
         ).fetchall()
         locations = conn.execute("SELECT name, type FROM locations ORDER BY name").fetchall()
 
         filter_location = request.args.get("location") or None
-        filter_sku = request.args.get("sku") or None
+        filter_product_id = request.args.get("product") or None
+        if filter_product_id:
+            try:
+                filter_product_id = int(filter_product_id)
+            except ValueError:
+                filter_product_id = None
         recent_query = """
-            SELECT m.*, lf.name AS from_name, lt.name AS to_name
+            SELECT m.*, lf.name AS from_name, lt.name AS to_name,
+                   mp.product_name, mp.barcode
             FROM inventory_movements m
             LEFT JOIN locations lf ON lf.id = m.location_from_id
             LEFT JOIN locations lt ON lt.id = m.location_to_id
+            LEFT JOIN master_products mp ON mp.product_id = m.product_id
         """
         conditions, params = [], []
         if filter_location:
             conditions.append("(lf.name = ? OR lt.name = ?)")
             params.extend([filter_location, filter_location])
-        if filter_sku:
-            conditions.append("m.sku_code = ?")
-            params.append(filter_sku)
+        if filter_product_id:
+            conditions.append("m.product_id = ?")
+            params.append(filter_product_id)
         if conditions:
             recent_query += " WHERE " + " AND ".join(conditions)
         recent_query += " ORDER BY m.id DESC LIMIT 25"
@@ -592,7 +636,7 @@ def new_movement():
             location_types=LOCATION_TYPES,
             recent=recent,
             selected_location=filter_location,
-            selected_sku=filter_sku,
+            selected_product_id=filter_product_id,
             pending=pending,
         )
     finally:
@@ -805,13 +849,131 @@ def activity():
     conn = get_connection()
     try:
         action_type = request.args.get("action_type") or None
+        period, date_from, date_to = _date_filter_args()
         return render_template(
             "activity.html",
-            entries=recent_activity(conn, action_type=action_type),
+            entries=recent_activity(conn, action_type=action_type, date_from=date_from, date_to=date_to),
             action_type=action_type,
+            period=period, date_from=date_from, date_to=date_to,
         )
     finally:
         conn.close()
+
+
+@app.route("/discrepancy-import", methods=["GET", "POST"])
+def discrepancy_import():
+    """Stage a Scootsy discrepancy/PR CSV. This classifies an existing
+    GRN shortfall loss; it never creates another inventory movement."""
+    conn = get_connection()
+    try:
+        if request.method == "POST":
+            try:
+                customer_id = int(request.form.get("customer_id", ""))
+            except ValueError:
+                customer_id = None
+            if customer_id is None or conn.execute(
+                "SELECT 1 FROM customers WHERE id=?", (customer_id,)
+            ).fetchone() is None:
+                flash("Choose a customer before uploading.", "error")
+                return redirect(url_for("discrepancy_import"))
+
+            file = request.files.get("file")
+            if not file or not file.filename:
+                flash("Choose a CSV file to upload.", "error")
+                return redirect(url_for("discrepancy_import"))
+            original_name = secure_filename(file.filename)
+            if not original_name.lower().endswith(".csv"):
+                flash("Discrepancy import expects a .csv file.", "error")
+                return redirect(url_for("discrepancy_import"))
+
+            dest = UPLOAD_DIR / f"discrepancy_csv_{secrets.token_hex(8)}_{original_name}"
+            file.save(dest)
+            try:
+                result = discrepancy_csv_staging.stage_csv(
+                    conn, str(dest), customer_id, filename=original_name
+                )
+                if result["reused"]:
+                    flash("This discrepancy file was already imported. Opening its review.", "warning")
+                else:
+                    log_activity(
+                        conn, "discrepancy_csv_upload",
+                        f"Staged discrepancy CSV {original_name}",
+                        "discrepancy_import_batch", str(result["batch_id"]),
+                    )
+                    flash("Discrepancy file staged. Review the rows before classifying them.", "success")
+                conn.commit()
+                return redirect(url_for("discrepancy_import_review", batch_id=result["batch_id"]))
+            except discrepancy_csv_staging.FatalImportError as exc:
+                conn.rollback()
+                flash(f"Could not import {original_name}: {exc}", "error")
+                return redirect(url_for("discrepancy_import"))
+            except Exception:
+                conn.rollback()
+                log.exception("Unexpected error importing discrepancy CSV %s", original_name)
+                flash(f"Could not import {original_name} — an unexpected error occurred.", "error")
+                return redirect(url_for("discrepancy_import"))
+
+        return render_template(
+            "discrepancy_import.html",
+            batches=discrepancy_csv_staging.list_batches(conn),
+            customers=conn.execute("SELECT id,name FROM customers ORDER BY name").fetchall(),
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/discrepancy-import/<int:batch_id>")
+def discrepancy_import_review(batch_id):
+    conn = get_connection()
+    try:
+        batch, lines = discrepancy_csv_staging.get_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        counts = {name: sum(1 for line in lines if line["review_status"] == name)
+                  for name in ("ready", "blocked", "ignored")}
+        counts["classified"] = sum(1 for line in lines if line["classified_at"] is not None)
+        return render_template(
+            "discrepancy_import_review.html", batch=batch, lines=lines, counts=counts
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/discrepancy-import/<int:batch_id>/classify", methods=["POST"])
+def classify_discrepancy_batch(batch_id):
+    conn = get_connection()
+    try:
+        batch, _ = discrepancy_csv_staging.get_batch(conn, batch_id)
+        if batch is None:
+            abort(404, description="This batch does not exist.")
+        count = discrepancy_csv_staging.classify_ready(conn, batch_id)
+        log_activity(
+            conn, "discrepancy_classified", f"Classified {count} discrepancy row(s)",
+            "discrepancy_import_batch", str(batch_id),
+        )
+        conn.commit()
+        flash(f"Posted {count} discrepancy row(s) to reporting. Stock quantities were not changed.", "success")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return redirect(url_for("discrepancy_import_review", batch_id=batch_id))
+
+
+@app.route("/discrepancy-import/<int:batch_id>/revalidate", methods=["POST"])
+def revalidate_discrepancy_batch(batch_id):
+    conn = get_connection()
+    try:
+        count = discrepancy_csv_staging.revalidate_batch(conn, batch_id)
+        conn.commit()
+        flash(f"Rechecked {count} discrepancy row(s) against posted POs and GRNs.", "success")
+    except ValueError as exc:
+        conn.rollback()
+        flash(str(exc), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("discrepancy_import_review", batch_id=batch_id))
 
 
 @app.route("/po-import", methods=["GET", "POST"])
@@ -886,6 +1048,28 @@ def po_import_review(batch_id):
         )
     finally:
         conn.close()
+
+
+@app.route("/po-import/<int:batch_id>/revalidate", methods=["POST"])
+def revalidate_po_batch_route(batch_id):
+    conn = get_connection()
+    try:
+        count = po_csv_staging.revalidate_product_mappings(conn, batch_id)
+        log_activity(
+            conn,
+            "po_batch_revalidated",
+            f"Revalidated Master Product mappings for {count} staged PO line(s) in batch {batch_id}",
+            "po_import_batch",
+            str(batch_id),
+        )
+        conn.commit()
+        flash(f"Revalidated {count} staged PO line(s).", "success")
+    except ValueError as e:
+        conn.rollback()
+        flash(str(e), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("po_import_review", batch_id=batch_id))
 
 
 @app.route("/po-import/<int:batch_id>/po/<int:staged_po_id>")
@@ -1014,9 +1198,44 @@ def post_staged_pos(batch_id):
                 "changes made.",
                 "warning",
             )
+        if result.get("skipped_existing"):
+            exact = sum(p["status"] == "exact_duplicate" for p in result["skipped_existing"])
+            review = len(result["skipped_existing"]) - exact
+            flash(
+                f"Skipped {len(result['skipped_existing'])} order(s) already in the official ledger "
+                f"({exact} exact duplicate(s), {review} review item(s)). New orders were not blocked.",
+                "warning",
+            )
     finally:
         conn.close()
     return redirect(url_for("po_import_review", batch_id=batch_id))
+
+
+@app.route("/po-import/<int:batch_id>/po/<int:staged_po_id>/duplicate-decision", methods=["POST"])
+def duplicate_po_decision(batch_id, staged_po_id):
+    conn = get_connection()
+    try:
+        staged_po = po_csv_staging.get_staged_po(conn, staged_po_id)
+        if staged_po is None or staged_po["batch_id"] != batch_id:
+            abort(404, description="This staged PO does not belong to this batch.")
+        disposition = request.form.get("disposition", "")
+        reason = request.form.get("reason", "")
+        try:
+            official_po_id = po_posting.record_duplicate_decision(conn, staged_po_id, disposition, reason)
+            label = "Keep Existing PO" if disposition == "keep_existing" else "Treat as Duplicate"
+            log_activity(
+                conn, "po_duplicate_reviewed",
+                f"{label} for staged PO {staged_po['external_po_number']} against official PO {official_po_id}: {reason.strip()}",
+                "staged_purchase_order", str(staged_po_id),
+            )
+            conn.commit()
+            flash(f"Saved decision: {label}. The official PO was not changed.", "success")
+        except po_posting.PostingError as e:
+            conn.rollback()
+            flash(str(e), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("staged_po_detail", batch_id=batch_id, staged_po_id=staged_po_id))
 
 
 @app.route("/grn-import", methods=["GET", "POST"])

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Review discrepancy import - Drizzl Inventory{% endblock %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Discrepancy review</div><h1>{{ batch.source_filename }}</h1><p class="subtitle">{{ batch.customer_name }} · Causes are added to existing GRN shortfall losses. Stock is not deducted again.</p></div><a href="{{ url_for('discrepancy_import') }}">Back to imports</a></div>
+
+<div class="metrics">
+  <div class="metric"><span class="metric-label">Ready</span><strong class="metric-value">{{ counts.ready }}</strong></div>
+  <div class="metric {{ 'metric-error' if counts.blocked else '' }}"><span class="metric-label">Blocked</span><strong class="metric-value">{{ counts.blocked }}</strong></div>
+  <div class="metric"><span class="metric-label">Ignored</span><strong class="metric-value">{{ counts.ignored }}</strong></div>
+  <div class="metric"><span class="metric-label">Posted</span><strong class="metric-value">{{ counts.classified }}</strong></div>
+</div>
+
+<div class="panel">
+  <form method="post" action="{{ url_for('revalidate_discrepancy_batch', batch_id=batch.batch_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <p class="subtitle">Recheck matching after POs or GRNs have been posted, or after mappings have changed.</p>
+    <button type="submit" class="secondary">Recheck rows</button>
+  </form>
+</div>
+
+{% if counts.ready > counts.classified %}
+<div class="panel">
+  <form method="post" action="{{ url_for('classify_discrepancy_batch', batch_id=batch.batch_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <p class="subtitle">Post the ready reasons to discrepancy reporting. Blocked and discontinued/unmapped products stay unchanged, and stock is not changed.</p>
+    <button type="submit">Post ready discrepancies</button>
+  </form>
+</div>
+{% elif counts.classified %}
+<div class="panel" style="border-color:var(--success); background:var(--success-bg);">
+  <strong>{{ counts.classified }} discrepancy row(s) posted to dashboard reporting.</strong>
+  <p class="subtitle" style="margin:6px 0 0;">There is nothing else ready to post in this batch. Blocked and ignored rows remain unchanged.</p>
+  <button type="button" disabled style="margin-top:12px;">Already posted</button>
+</div>
+{% endif %}
+
+<div class="panel table-panel">
+  <div class="table-scroll"><table>
+    <tr><th>Row</th><th>PR</th><th>PO</th><th>GRN</th><th>Master product</th><th>Rejected</th><th>Cause</th><th>Status</th><th>Message</th></tr>
+    {% for line in lines %}
+    <tr>
+      <td>{{ line.source_row_number }}</td><td>{{ line.pr_number or '' }}</td><td>{{ line.po_number or '' }}</td><td>{{ line.grn_number or '' }}</td>
+      <td>{{ (line.product_name|product_label) if line.product_name else 'Ignored/unmapped product' }}</td>
+      <td>{{ line.rejected_qty if line.rejected_qty is not none else '' }}</td><td>{{ line.rejected_reason or '' }}</td>
+      <td><span class="badge">{{ 'Posted' if line.classified_at else line.review_status|capitalize }}</span></td>
+      <td>{{ line.review_message or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+</div>
+{% endblock %}

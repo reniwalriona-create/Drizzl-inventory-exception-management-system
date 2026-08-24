@@ -510,6 +510,29 @@ def grn_review_status(validation_status, po_verification_status, posted_grn_id=N
     return "verified"
 
 
+def grn_display_status(validation_status, po_verification_status, posted_grn_id=None,
+                       validation_errors=None, po_verification_errors=None):
+    """Specific operator-facing reason while preserving review_status as
+    the stable postability contract used by posting code and tests."""
+    if posted_grn_id is not None:
+        return "posted"
+    if validation_status == "blocked":
+        return "data_error"
+    codes = {
+        e.get("code") for e in (po_verification_errors or [])
+        if e.get("severity", "error") == "error"
+    }
+    if "official_grn_already_exists" in codes:
+        return "grn_already_posted"
+    if "official_po_not_found" in codes or "external_po_number_missing" in codes:
+        return "po_not_found"
+    if "duplicate_grn_in_other_batch" in codes:
+        return "duplicate_other_batch"
+    if po_verification_status != "verified":
+        return "review_required"
+    return "ready_to_post"
+
+
 def _grn_comparison_totals(conn, staged_grn_id):
     """Ordered/received/discrepancy totals for the batch review table's
     summary columns -- computed from get_grn_po_comparison() (normalized
@@ -554,6 +577,10 @@ def list_staged_grns(conn, batch_id):
     for r in rows:
         g = dict(r)
         g["review_status"] = grn_review_status(g["validation_status"], g["po_verification_status"], g["posted_grn_id"])
+        g["display_status"] = grn_display_status(
+            g["validation_status"], g["po_verification_status"], g["posted_grn_id"],
+            g["validation_errors"], g["po_verification_errors"],
+        )
         totals = _grn_comparison_totals(conn, g["staged_grn_id"])
         g["total_ordered_qty"] = totals["total_ordered_qty"] if totals else None
         g["total_computed_discrepancy_qty"] = totals["total_computed_discrepancy_qty"] if totals else None
@@ -568,9 +595,15 @@ def get_grn_batch_summary(conn, batch_id):
     """Server-derived counts for the batch review header -- never trust
     the browser for this."""
     grns = list_staged_grns(conn, batch_id)
-    counts = {"verified": 0, "quarantined": 0, "posted": 0}
+    counts = {
+        "ready_to_post": 0, "po_not_found": 0, "grn_already_posted": 0,
+        "duplicate_other_batch": 0, "review_required": 0, "data_error": 0,
+        "posted": 0, "verified": 0, "quarantined": 0,
+    }
     for g in grns:
-        counts[g["review_status"]] += 1
+        counts[g["display_status"]] += 1
+        if g["review_status"] in ("verified", "quarantined"):
+            counts[g["review_status"]] += 1
     raw_rows = conn.execute("SELECT COUNT(*) AS n FROM grn_import_rows WHERE batch_id = ?", (batch_id,)).fetchone()["n"]
     line_count = sum(g["line_count"] for g in grns)
     return {"grns": len(grns), "raw_rows": raw_rows, "lines": line_count, **counts}
@@ -601,6 +634,10 @@ def get_staged_grn(conn, staged_grn_id):
         return None
     grn = dict(row)
     grn["review_status"] = grn_review_status(grn["validation_status"], grn["po_verification_status"], grn["posted_grn_id"])
+    grn["display_status"] = grn_display_status(
+        grn["validation_status"], grn["po_verification_status"], grn["posted_grn_id"],
+        grn["validation_errors"], grn["po_verification_errors"],
+    )
     grn["lines"] = get_staged_grn_lines(conn, staged_grn_id)
     return grn
 

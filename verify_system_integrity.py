@@ -68,9 +68,10 @@ def run():
             "SELECT id FROM inventory_movements WHERE source_grn_line_item_id IS NOT NULL AND product_id IS NULL",
         )
         ok &= check(
-            conn, "every canonical SALE movement (product_id set) links back to its source GRN line",
+            conn, "every GRN-sourced canonical SALE movement links back to its source GRN line",
             "SELECT id FROM inventory_movements "
-            "WHERE movement_type = 'sale' AND product_id IS NOT NULL AND source_grn_line_item_id IS NULL",
+            "WHERE movement_type = 'sale' AND reference_type = 'grn' "
+            "AND product_id IS NOT NULL AND source_grn_line_item_id IS NULL",
         )
         ok &= check(
             conn, "no GRN line is linked from more than one movement (source_grn_line_item_id uniqueness)",

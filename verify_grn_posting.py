@@ -23,6 +23,7 @@ from pathlib import Path
 import psycopg2
 
 import db as db_module
+import discrepancy_csv_staging
 import grn_csv_staging as staging
 import grn_posting
 import ingest
@@ -42,6 +43,10 @@ GRN_HEADER = [
     "GrnLineValueWithoutTax", "GrnLineValueWithTax", "LotMrp", "LotExpiryDate",
     "CgstRate", "CgstAmount", "SgstRate", "SgstAmount", "IgstRate", "IgstAmount",
     "CessRate", "CessAmount", "AdditionalCess", "TotalTax", "TotalAmount",
+]
+DISCREPANCY_HEADER = [
+    "PrNumber", "PoNumber", "GrnNumber", "SkuCode", "AcceptedQty",
+    "TotalRejectedQty", "RejectedReasons",
 ]
 GRN_BASE_ROW = {
     "GrnNumber": "SYNGRN0001", "PurchaseOrderNumber": "SYNPO0001", "FacilityName": "DEMO FACILITY B",
@@ -367,6 +372,46 @@ def run():
         ok &= check("commitment after = 0 (full release despite 400 shortfall)", commitment_after_partial == 0, str(commitment_after_partial))
         partial_mv = conn.execute("SELECT quantity FROM inventory_movements WHERE reference_type='grn' AND reference_id='PARTIALGRN001'").fetchall()
         ok &= check("SALE = 200, not 600 and not 400", len(partial_mv) == 1 and partial_mv[0]["quantity"] == 200)
+        partial_loss = conn.execute(
+            "SELECT * FROM inventory_movements WHERE reference_type='grn_discrepancy' AND reference_id='PARTIALGRN001'"
+        ).fetchall()
+        ok &= check(
+            "unresolved discrepancy LOSS = 400, so full PO quantity leaves stock",
+            len(partial_loss) == 1 and partial_loss[0]["quantity"] == 400
+            and partial_loss[0]["source_grn_id"] == r4["posted"][0]["grn_id"],
+            str([dict(row) for row in partial_loss]),
+        )
+
+        print("\n--- Discrepancy CSV: classify only, never deduct twice ---")
+        discrepancy_path = write_csv([{
+            "PrNumber": "PR001", "PoNumber": "PARTIALPO001", "GrnNumber": "PARTIALGRN001",
+            "SkuCode": "DEMO-SKU-001", "AcceptedQty": "200", "TotalRejectedQty": "400",
+            "RejectedReasons": "Damaged",
+        }], DISCREPANCY_HEADER)
+        staged_discrepancy = discrepancy_csv_staging.stage_csv(
+            conn, discrepancy_path, scootsy_id, filename="discrepancy.csv"
+        )
+        conn.commit()
+        _, discrepancy_lines = discrepancy_csv_staging.get_batch(conn, staged_discrepancy["batch_id"])
+        ok &= check("matching discrepancy row is ready", discrepancy_lines[0]["review_status"] == "ready")
+        movement_before = conn.execute("SELECT quantity FROM inventory_movements WHERE id=?", (partial_loss[0]["id"],)).fetchone()["quantity"]
+        classified = discrepancy_csv_staging.classify_ready(conn, staged_discrepancy["batch_id"])
+        conn.commit()
+        movement_after = conn.execute("SELECT quantity,notes FROM inventory_movements WHERE id=?", (partial_loss[0]["id"],)).fetchone()
+        ok &= check("one discrepancy row classified", classified == 1)
+        ok &= check("classification records cause without changing quantity", movement_after["quantity"] == movement_before and movement_after["notes"] == "Damaged", str(dict(movement_after)))
+        duplicate = discrepancy_csv_staging.stage_csv(conn, discrepancy_path, scootsy_id, filename="again.csv")
+        ok &= check("same discrepancy file is idempotent", duplicate["reused"] and duplicate["batch_id"] == staged_discrepancy["batch_id"])
+
+        mismatch_path = write_csv([{
+            "PrNumber": "PR002", "PoNumber": "PARTIALPO001", "GrnNumber": "PARTIALGRN001",
+            "SkuCode": "DEMO-SKU-001", "AcceptedQty": "201", "TotalRejectedQty": "399",
+            "RejectedReasons": "Short",
+        }], DISCREPANCY_HEADER)
+        mismatch = discrepancy_csv_staging.stage_csv(conn, mismatch_path, scootsy_id, filename="mismatch.csv")
+        conn.commit()
+        _, mismatch_lines = discrepancy_csv_staging.get_batch(conn, mismatch["batch_id"])
+        ok &= check("wrong rejected quantity is blocked", mismatch_lines[0]["review_status"] == "blocked", mismatch_lines[0]["review_message"])
 
         # -----------------------------------------------------------------
         print("\n--- Product completely absent from GRN: full release for BOTH products ---")
@@ -383,6 +428,8 @@ def run():
         ok &= check("commitment fully closed for BOTH A and B", commitment_absent == {}, str(commitment_absent))
         absent_mv = conn.execute("SELECT product_id, quantity FROM inventory_movements WHERE reference_type='grn' AND reference_id='ABSENTGRN001'").fetchall()
         ok &= check("only 1 SALE movement created (A=100), none for B", len(absent_mv) == 1 and absent_mv[0]["product_id"] == pDEMO-SKU-001 and absent_mv[0]["quantity"] == 100)
+        absent_loss = conn.execute("SELECT product_id,quantity FROM inventory_movements WHERE reference_type='grn_discrepancy' AND reference_id='ABSENTGRN001'").fetchall()
+        ok &= check("absent product still leaves stock as a 50-unit discrepancy loss", len(absent_loss) == 1 and absent_loss[0]["product_id"] == pDEMO-SKU-002 and absent_loss[0]["quantity"] == 50, str(absent_loss))
         comparison_absent = staging.get_grn_po_comparison(conn, absent_grn["staged_grn_id"])
         b_row = next(r for r in comparison_absent if r["external_sku"] == "DEMO-SKU-002")
         ok &= check("PO/GRN comparison still shows B's shortfall = 50 for audit", b_row["computed_discrepancy_qty"] == 50)
