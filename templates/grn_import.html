@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}GRN CSV import - Drizzl Inventory{% endblock %}
 {% block content %}
-<div class="page-header"><div><div class="eyebrow">Goods receipts</div><h1>Import GRN file</h1><p class="subtitle">Upload a Scootsy CSV to stage and verify its receipts. Inventory changes only after review and posting.</p></div></div>
+<div class="page-header"><div><div class="eyebrow">Goods receipts</div><h1>Import GRN file</h1><p class="subtitle">Upload a GRN CSV to match against posted POs. Inventory changes after GRNs are accepted and posted.</p></div></div>
 
 <div class="panel">
   <form method="post" enctype="multipart/form-data">
@@ -15,7 +15,7 @@
         {% endfor %}
       </select>
     </div>
-    <p class="subtitle" style="margin-top:-8px;">This GRN file does not reliably identify the customer on its own (VendorName/SupplierCode identify Drizzl, the supplier -- not the buyer) -- choose it explicitly.</p>
+    <p class="subtitle" style="margin-top:-8px;">This GRN file does not reliably identify the customer on its own — choose it explicitly.</p>
     <div class="field">
       <label for="file">GRN CSV file</label>
       <input type="file" name="file" id="file" accept=".csv" required>

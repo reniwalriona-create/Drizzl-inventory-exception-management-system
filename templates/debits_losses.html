@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Debits & Losses - Drizzl Inventory{% endblock %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Discrepancy Review</div><h1>Debits &amp; Losses</h1><p class="subtitle">See where money and units were lost, why it happened, and which POs were affected.</p></div></div>
+
+<div class="metrics dashboard-metrics">
+  <div class="metric metric-warning"><span class="metric-label">Money Debited · {{ summary.purchase_orders }} POs</span><strong class="metric-value">₹{{ "{:,.0f}".format(summary.total_debited|round(0, 'ceil')) }}</strong></div>
+  <div class="metric"><span class="metric-label">Cans Lost</span><strong class="metric-value">{{ "{:,.0f}".format(summary.cans_lost) }}</strong></div>
+  <div class="metric"><span class="metric-label">Discrepancy Notes Posted</span><strong class="metric-value">{{ summary.discrepancy_notes }}</strong></div>
+  <div class="metric {{ 'metric-error' if summary.pairs_needing_notes else '' }}"><span class="metric-label">Discrepancy Notes Needed · All Dates</span><strong class="metric-value">{{ summary.pairs_needing_notes }}</strong></div>
+  <div class="metric {{ 'metric-warning' if summary.shortfall else '' }}"><span class="metric-label">Shortfall Rate · {{ "%.0f"|format(summary.shortfall) }} / {{ "%.0f"|format(summary.ordered) }} Cans</span><strong class="metric-value">{{ "%.1f"|format(summary.shortfall_rate) }}%</strong></div>
+</div>
+
+<div class="panel dashboard-filter compact-filter" id="loss-filters">
+  <h2 style="margin-top:0;">Shared Filters</h2>
+  <p class="filter-note">Every section below uses the discrepancy CSV's <strong>CompletedDate</strong>.</p>
+  <form method="get" action="{{ url_for('debits_losses') }}#loss-results" class="row" style="align-items:flex-end;">
+    <div class="field"><label for="location">Source Location</label><select name="location" id="location"><option value="">All Locations</option>{% for l in all_locations %}<option value="{{ l.name }}" {{ "selected" if selected_location == l.name }}>{{ l.name }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="loss_period">Completed Range</label><select name="loss_period" id="loss_period"><option value="all" {{ "selected" if period == "all" }}>All Time</option><option value="7d" {{ "selected" if period == "7d" }}>Last 7 Days</option><option value="15d" {{ "selected" if period == "15d" }}>Last 15 Days</option><option value="30d" {{ "selected" if period == "30d" }}>Last 30 Days</option><option value="custom" {{ "selected" if period == "custom" }}>Custom Dates</option></select></div>
+    <div class="field"><label for="loss_date_from">Completed From</label><input type="date" name="loss_date_from" id="loss_date_from" value="{{ date_from or '' }}"></div>
+    <div class="field"><label for="loss_date_to">Completed To</label><input type="date" name="loss_date_to" id="loss_date_to" value="{{ date_to or '' }}"></div>
+    <div class="field" style="flex:0;"><button type="submit">Apply</button></div>
+    {% if selected_location or selected_product_id or period != "all" %}<div class="field" style="flex:0;"><a href="{{ url_for('debits_losses') }}#loss-results">Clear</a></div>{% endif %}
+  </form>
+</div>
+
+<div id="loss-results"></div>
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Debited Amount by PO</h2><span class="subtitle" style="margin:0;">{{ debit_by_po|length }} PO{{ "s" if debit_by_po|length != 1 }}</span></div>
+  {% if debit_by_po %}<div class="table-scroll"><table>
+    <tr><th>PO Number</th><th>Discrepancy Notes</th><th>Completed Date</th><th>Total Debited</th><th></th></tr>
+    {% for row in debit_by_po %}<tr>
+      <td><a class="cell-primary" href="{{ url_for('lookup', q=row.po_number) }}">{{ row.po_number }}</a></td><td>{{ row.discrepancy_notes }}</td>
+      <td>{% if row.first_completed_date == row.last_completed_date %}{{ row.first_completed_date.strftime('%b %d, %Y') }}{% else %}{{ row.first_completed_date.strftime('%b %d, %Y') }} – {{ row.last_completed_date.strftime('%b %d, %Y') }}{% endif %}</td>
+      <td><strong>₹{{ "{:,.2f}".format(row.total_debited) }}</strong></td><td><a href="{{ url_for('lookup', q=row.po_number) }}">View Chain</a></td>
+    </tr>{% endfor %}
+  </table></div>{% else %}<p class="empty">No classified discrepancy debits match these filters.</p>{% endif %}
+</div>
+
+<div class="panel table-panel"><div class="table-panel-header"><h2>Discrepancy Units by Cause</h2></div>
+  {% if charts.damage_cause.labels %}<div class="chart-wrap"><canvas id="damageCauseChart"></canvas></div>{% else %}<p class="empty">No classified discrepancy units match these filters.</p>{% endif %}
+</div>
+<div class="panel table-panel"><div class="table-panel-header"><h2>Discrepancy Trend over Time</h2></div>
+  {% if charts.damage_trend.labels %}<div class="chart-wrap"><canvas id="damageTrendChart"></canvas></div>{% else %}<p class="empty">No classified discrepancy units match these filters.</p>{% endif %}
+</div>
+
+<details class="panel">
+  <summary>PO–GRN Quantity Differences <span class="badge">{{ differences|length }}</span></summary>
+  <p class="subtitle" style="margin:0 0 10px;">Only lines where ordered and received quantities differ are shown. Open the PO chain for the complete document history.</p>
+  {% if differences %}<div class="table-scroll"><table>
+    <tr><th>PO</th><th>Customer SKU</th><th>Master Product</th><th>Ordered</th><th>Received</th><th>Shortfall</th><th></th></tr>
+    {% for r in differences %}<tr><td>{{ r.po_number }}</td><td>{{ r.external_sku }}</td><td>{{ r.product_name|product_label }}</td><td>{{ "%.0f"|format(r.ordered_qty) }}</td><td>{{ "%.0f"|format(r.received_qty) }}</td><td class="neg">{{ "%+.0f"|format(r.computed_shortfall_qty) }}</td><td><a href="{{ url_for('lookup', q=r.po_number) }}">View Chain</a></td></tr>{% endfor %}
+  </table></div>{% else %}<p class="empty">No PO–GRN quantity differences match these filters.</p>{% endif %}
+</details>
+
+<script>
+  ["loss_date_from", "loss_date_to"].forEach(function (id) { document.getElementById(id).addEventListener("change", function () { document.getElementById("loss_period").value = "custom"; }); });
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>window.DASHBOARD_CHARTS = {{ charts | tojson }};</script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+{% endblock %}

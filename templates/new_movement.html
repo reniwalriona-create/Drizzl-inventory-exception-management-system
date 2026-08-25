@@ -90,7 +90,7 @@
           <option value="{{ p.product_id }}">{{ p.product_name|product_label }}</option>
           {% endfor %}
         </select>
-        <p class="subtitle" style="margin:5px 0 0;">Only existing master products can affect inventory. Add a genuinely new product from the terminal first.</p>
+        <p class="subtitle" style="margin:5px 0 0;">To add a new product, contact the developer.</p>
       </div>
       <div class="field">
         <label for="quantity">Quantity</label>
@@ -101,14 +101,9 @@
     <div class="row">
       <div class="field">
         <label for="location_from">From location <span id="from_hint" class="badge" style="display:none;"></span></label>
-        <input type="text" name="location_from" id="location_from" list="location_list">
-      </div>
-      <div class="field">
-        <label for="location_from_type">New "from" location's type</label>
-        <select name="location_from_type" id="location_from_type">
-          {% for t in location_types %}
-          <option value="{{ t }}">{{ t.replace('_', ' ')|capitalize }}</option>
-          {% endfor %}
+        <select name="location_from" id="location_from">
+          <option value="">Choose location...</option>
+          {% for l in locations %}<option value="{{ l.name }}">{{ l.name }}</option>{% endfor %}
         </select>
       </div>
     </div>
@@ -116,22 +111,13 @@
     <div class="row">
       <div class="field">
         <label for="location_to">To location <span id="to_hint" class="badge" style="display:none;"></span></label>
-        <input type="text" name="location_to" id="location_to" list="location_list">
-      </div>
-      <div class="field">
-        <label for="location_to_type">New "to" location's type</label>
-        <select name="location_to_type" id="location_to_type">
-          {% for t in location_types %}
-          <option value="{{ t }}">{{ t.replace('_', ' ')|capitalize }}</option>
-          {% endfor %}
+        <select name="location_to" id="location_to">
+          <option value="">Choose location...</option>
+          {% for l in locations %}<option value="{{ l.name }}">{{ l.name }}</option>{% endfor %}
         </select>
       </div>
     </div>
-    <datalist id="location_list">
-      {% for l in locations %}
-      <option value="{{ l.name }}">{{ l.type }}</option>
-      {% endfor %}
-    </datalist>
+    <p class="subtitle" style="margin-top:-4px;">To add a new warehouse location, contact the developer.</p>
 
     <div class="field">
       <label for="reason">Reason (e.g. "flea_market", "consignment_transfer", "damaged")</label>
@@ -223,8 +209,6 @@
     var typeSelect = document.getElementById("movement_type");
     var fromField = document.getElementById("location_from");
     var toField = document.getElementById("location_to");
-    var fromTypeField = document.getElementById("location_from_type");
-    var toTypeField = document.getElementById("location_to_type");
     var fromHint = document.getElementById("from_hint");
     var toHint = document.getElementById("to_hint");
 
@@ -260,17 +244,13 @@
 
       fromField.required = fromRequired;
       fromField.disabled = fromForbidden;
-      fromTypeField.disabled = fromForbidden;
       if (fromForbidden) fromField.value = "";
-      fromField.placeholder = fromForbidden ? "(not used for " + t + ")" : fromRequired ? "" : "(leave blank)";
       fromHint.style.display = (fromRequired || fromForbidden) ? "inline-block" : "none";
       fromHint.textContent = fromForbidden ? "not needed" : "required";
 
       toField.required = toRequired;
       toField.disabled = toForbidden;
-      toTypeField.disabled = toForbidden;
       if (toForbidden) toField.value = "";
-      toField.placeholder = toForbidden ? "(not used for " + t + ")" : toRequired ? "" : "(leave blank)";
       toHint.style.display = (toRequired || toForbidden) ? "inline-block" : "none";
       toHint.textContent = toForbidden ? "not needed" : "required";
     }

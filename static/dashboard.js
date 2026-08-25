@@ -11,9 +11,11 @@ document.addEventListener("DOMContentLoaded", function () {
     var value = String(label || "").toLowerCase();
     if (value.includes("orange")) return "#f28a3b";
     if (value.includes("yuzu")) return "#56c9c4";
+    if (value.includes("passionfruit") && value.includes("sparkling")) return "#d9b8ff";
     if (value.includes("passionfruit")) return "#a986cf";
     if (value.includes("berry")) return "#e878ad";
-    if (value.includes("lemon")) return "#efd454";
+    if (value.includes("lemon") && value.includes("sparkling")) return "#fff19a";
+    if (value.includes("lemon")) return "#ffd83d";
     if (value.includes("damaged")) return "#e878ad";
     if (value.includes("short")) return "#f28a3b";
     if (value.includes("wrong")) return "#a986cf";
@@ -59,7 +61,7 @@ document.addEventListener("DOMContentLoaded", function () {
           },
         },
         plugins: {
-          legend: { display: datasets.length > 1 },
+          legend: { display: datasets.length > 1, position: opts.legendPosition || "top", align: "center" },
           title: { display: !!opts.title, text: opts.title, font: { size: 14 } },
         },
       },
@@ -88,41 +90,72 @@ document.addEventListener("DOMContentLoaded", function () {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { display: true, position: "right" },
+          legend: {
+            display: true,
+            position: "right",
+            align: "center",
+            labels: {
+              usePointStyle: true,
+              padding: 16,
+              generateLabels: function (chart) {
+                var values = chart.data.datasets[0].data;
+                var total = values.reduce(function (sum, value) { return sum + Number(value || 0); }, 0);
+                return chart.data.labels.map(function (label, i) {
+                  var pct = total ? (Number(values[i] || 0) / total * 100).toFixed(1) : "0.0";
+                  return { text: label + " (" + pct + "%)", fillStyle: chart.data.datasets[0].backgroundColor[i], strokeStyle: "#fff", index: i };
+                });
+              },
+            },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (context) {
+                var values = context.dataset.data;
+                var total = values.reduce(function (sum, value) { return sum + Number(value || 0); }, 0);
+                var pct = total ? (Number(context.raw || 0) / total * 100).toFixed(1) : "0.0";
+                return context.label + ": " + context.raw + " cans (" + pct + "%)";
+              },
+            },
+          },
           title: { display: !!opts.title, text: opts.title, font: { size: 14 } },
         },
       },
     });
   }
 
-  var charts = window.DASHBOARD_CHARTS;
+  var charts = window.DASHBOARD_CHARTS || {};
+  charts.stock = charts.stock || { labels: [], datasets: [] };
+  charts.po_by_facility = charts.po_by_facility || { labels: [], data: [] };
+  charts.damage_trend = charts.damage_trend || { labels: [], data: [] };
+  charts.damage_cause = charts.damage_cause || { labels: [], data: [] };
+  charts.flavor_popularity = charts.flavor_popularity || { labels: [], data: [] };
 
   barOrLineChart(
     "stockChart", "bar",
     charts.stock.labels,
     charts.stock.datasets.map(function (d) { return { label: d.label, data: d.data }; }),
-    { title: "Stock by location", xTitle: "Location", yTitle: "Qty on hand", stacked: true }
+    { title: "Stock by location", xTitle: "Location", yTitle: "Qty on hand", stacked: true, legendPosition: "right" }
   );
 
   barOrLineChart(
     "poByFacilityChart", "bar",
     charts.po_by_facility.labels,
     [{ label: "Cumulative ordered", data: charts.po_by_facility.data }],
-    { title: "Cumulative PO Quantity by Warehouse (All Orders to Date)", xTitle: "Facility", yTitle: "Total quantity ordered" }
+    { title: "PO quantity by receiving facility", xTitle: "Facility", yTitle: "Cans ordered" }
   );
 
   barOrLineChart(
     "damageTrendChart", "line",
     charts.damage_trend.labels,
-    [{ label: "Damaged units", data: charts.damage_trend.data }],
-    { title: "Damage trend over time", xTitle: "Date", yTitle: "Units damaged" }
+    [{ label: "Discrepancy units", data: charts.damage_trend.data }],
+    { title: "Discrepancies by completed date", xTitle: "Completed date", yTitle: "Discrepancy units" }
   );
 
   barOrLineChart(
     "damageCauseChart", "bar",
     charts.damage_cause.labels,
-    [{ label: "Loss units", data: charts.damage_cause.data, colors: charts.damage_cause.labels.map(colorForLabel) }],
-    { title: "Damaged units by cause", xTitle: "Cause", yTitle: "Units damaged" }
+    [{ label: "Discrepancy units", data: charts.damage_cause.data, colors: charts.damage_cause.labels.map(colorForLabel) }],
+    { title: "Discrepancy units by cause", xTitle: "Cause", yTitle: "Discrepancy units" }
   );
 
   pieChart(

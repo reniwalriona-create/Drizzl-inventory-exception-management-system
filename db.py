@@ -93,6 +93,12 @@ def get_connection():
         "SELECT 1 FROM information_schema.tables WHERE table_name = 'customers'"
     ).fetchone() is not None
     if not tables_exist:
+        if config.IS_PRODUCTION:
+            conn.close()
+            raise RuntimeError(
+                "Production database is not provisioned. Apply schema_postgres.sql and all "
+                "migrations before starting the application."
+            )
         conn.executescript(SCHEMA_PATH.read_text())
 
     needs_seed = conn.execute("SELECT COUNT(*) AS n FROM customers").fetchone()["n"] == 0

@@ -7,46 +7,67 @@
   <div class="metric"><span class="metric-label">All official POs</span><strong class="metric-value">{{ total_rows }}</strong></div>
   <div class="metric metric-warning"><span class="metric-label">Awaiting GRN</span><strong class="metric-value">{{ counts.awaiting_grn }}</strong></div>
   <div class="metric metric-success"><span class="metric-label">GRN posted</span><strong class="metric-value">{{ counts.grn_posted }}</strong></div>
-  <div class="metric metric-error"><span class="metric-label">With discrepancy</span><strong class="metric-value">{{ counts.grn_posted_discrepancy }}</strong></div>
+  <div class="metric metric-error"><span class="metric-label">GRN + Discrepancy posted</span><strong class="metric-value">{{ counts.grn_posted_discrepancy }}</strong></div>
   <div class="metric"><span class="metric-label">Voided</span><strong class="metric-value">{{ counts.voided }}</strong></div>
 </div>
 
 <div class="panel toolbar">
   <div class="toolbar-copy">A GRN closes the entire PO commitment. Quantity differences remain visible for later discrepancy review.</div>
-  <form method="get" class="row" style="align-items:flex-end;">
+  <form method="get" action="#tracker-results" class="row" style="align-items:flex-end;">
     <div class="field" style="margin:0; max-width:280px;">
       <label for="status">Filter by fulfillment status</label>
-      <select id="status" name="status" onchange="this.form.submit()">
+      <select id="status" name="status">
         <option value="">All official POs ({{ total_rows }})</option>
         <option value="awaiting_grn" {{ "selected" if selected_status == "awaiting_grn" }}>Awaiting GRN ({{ counts.awaiting_grn }})</option>
+        <option value="needs_discrepancy" {{ "selected" if selected_status == "needs_discrepancy" }}>Needs discrepancy ({{ counts.needs_discrepancy }})</option>
         <option value="grn_posted" {{ "selected" if selected_status == "grn_posted" }}>GRN posted ({{ counts.grn_posted }})</option>
-        <option value="grn_posted_discrepancy" {{ "selected" if selected_status == "grn_posted_discrepancy" }}>GRN posted – discrepancy ({{ counts.grn_posted_discrepancy }})</option>
+        <option value="grn_posted_discrepancy" {{ "selected" if selected_status == "grn_posted_discrepancy" }}>GRN + Discrepancy posted ({{ counts.grn_posted_discrepancy }})</option>
         <option value="voided" {{ "selected" if selected_status == "voided" }}>Voided ({{ counts.voided }})</option>
       </select>
     </div>
+    <div class="field" style="margin:0; max-width:190px;">
+      <label for="tracker_period">PO Creation Date</label>
+      <select id="tracker_period" name="tracker_period">
+        <option value="all" {{ "selected" if tracker_period == "all" }}>All Time</option>
+        <option value="7d" {{ "selected" if tracker_period == "7d" }}>Last 7 Days</option>
+        <option value="15d" {{ "selected" if tracker_period == "15d" }}>Last 15 Days</option>
+        <option value="30d" {{ "selected" if tracker_period == "30d" }}>Last 30 Days</option>
+        <option value="custom" {{ "selected" if tracker_period == "custom" }}>Custom Dates</option>
+      </select>
+    </div>
+    <div class="field" style="margin:0; max-width:165px;"><label for="tracker_date_from">From</label><input id="tracker_date_from" name="tracker_date_from" type="date" value="{{ tracker_date_from or '' }}"></div>
+    <div class="field" style="margin:0; max-width:165px;"><label for="tracker_date_to">To</label><input id="tracker_date_to" name="tracker_date_to" type="date" value="{{ tracker_date_to or '' }}"></div>
+    <button type="submit">Apply</button>
+    <a href="{{ url_for('po_grn_tracker') }}#tracker-results">Clear</a>
   </form>
+  <p class="subtitle" style="margin:12px 0 0;">The date comes from <strong>PoCreatedAt</strong> inside the PO CSV, not the date the file was uploaded.</p>
 </div>
 
-<div class="panel table-panel">
+<div class="panel table-panel" id="tracker-results">
   <div class="table-panel-header"><h2>{{ "Filtered official POs" if selected_status else "All official POs" }}</h2><span class="subtitle" style="margin:0;">{{ rows|length }} result{{ "s" if rows|length != 1 }}</span></div>
   {% if rows %}
   <div class="table-scroll"><table>
-    <tr><th>PO number</th><th>Destination</th><th>Drizzl source</th><th>Expected</th><th>Ordered</th><th>GRN number</th><th>GRN posted</th><th>Received</th><th>Difference</th><th></th></tr>
+    <tr><th>PO number</th><th>PO created</th><th>Destination</th><th>Drizzl source</th><th>Expected</th><th>GRN number</th><th>GRN posted</th><th></th></tr>
     {% for row in rows %}
     <tr>
-      <td><a class="cell-primary" href="{{ url_for('lookup', q=row.po_number) }}">{{ row.po_number }}</a><div style="margin-top:4px;"><span class="badge badge-{{ row.fulfillment_status }}">{{ row.fulfillment_status.replace("_", " ")|upper }}</span></div></td>
+      <td><a class="cell-primary" href="{{ url_for('lookup', q=row.po_number) }}">{{ row.po_number }}</a><div style="margin-top:4px;"><span class="badge badge-{{ row.fulfillment_status }}">{% if row.fulfillment_status == "grn_posted_discrepancy" %}GRN + DISCREPANCY POSTED{% else %}{{ row.fulfillment_status.replace("_", " ")|upper }}{% endif %}</span></div></td>
+      <td>{{ row.external_po_created_at.strftime("%Y-%m-%d") if row.external_po_created_at else "—" }}</td>
       <td>{{ row.destination_facility_name or row.facility_name or "—" }}</td>
       <td>{{ row.source_location_name or "—" }}</td>
       <td>{{ row.expected_delivery_date or "—" }}</td>
-      <td>{{ "%.0f"|format(row.total_ordered_qty) }}</td>
       <td>{% if row.grn_number %}<a href="{{ url_for('lookup', q=row.grn_number) }}">{{ row.grn_number }}</a>{% else %}—{% endif %}</td>
       <td>{{ row.grn_posted_at or "—" }}</td>
-      <td>{{ "%.0f"|format(row.total_received_qty) if row.total_received_qty is not none else "—" }}</td>
-      <td>{{ "%.0f"|format(row.total_discrepancy_qty) if row.total_discrepancy_qty is not none else "—" }}</td>
       <td><a href="{{ url_for('lookup', q=row.po_number) }}">View chain</a></td>
     </tr>
     {% endfor %}
   </table></div>
   {% else %}<p class="empty">No official POs match this filter.</p>{% endif %}
 </div>
+<script>
+  ["tracker_date_from", "tracker_date_to"].forEach(function (id) {
+    document.getElementById(id).addEventListener("change", function () {
+      document.getElementById("tracker_period").value = "custom";
+    });
+  });
+</script>
 {% endblock %}

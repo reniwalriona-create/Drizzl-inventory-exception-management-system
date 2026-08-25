@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Activity log - Drizzl Inventory{% endblock %}
 {% block content %}
+<style>
+  .activity-table { min-width:1100px !important; }
+  .activity-col-date { width:12%; }
+  .activity-col-action { width:20%; }
+  .activity-col-user { width:10%; }
+  .activity-col-type { width:13%; }
+  .activity-col-details { width:35%; }
+  .activity-col-reason { width:10%; }
+  .activity-table td:nth-child(2) { white-space:normal; overflow-wrap:break-word; }
+  .reason-preview { display:inline-block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:help; }
+</style>
 <div class="page-header"><div><div class="eyebrow">Audit trail</div><h1>Activity log</h1><p class="subtitle">A chronological record of uploads, inventory changes, corrections, and review actions.</p></div></div>
 
 <div class="panel toolbar">
@@ -47,6 +58,7 @@
   <div class="table-scroll">
   {% if entries %}
   <table class="activity-table">
+    <colgroup><col class="activity-col-date"><col class="activity-col-action"><col class="activity-col-user"><col class="activity-col-type"><col class="activity-col-details"><col class="activity-col-reason"></colgroup>
     <tr><th>When</th><th>Action</th><th>User</th><th>Movement type</th><th>Details</th><th>Reason</th></tr>
     {% for e in entries %}
     <tr>
@@ -60,10 +72,10 @@
         {% if e.from_name or e.to_name %}<div class="cell-secondary">{{ e.from_name or "Stock" }}{% if e.to_name %} → {{ e.to_name }}{% endif %}</div>{% endif %}
         {% else %}
         {% set clean_details = e.short_details|compact_product_text %}
-        <span class="cell-primary">{{ clean_details[:72] }}{% if clean_details|length > 72 %}…{% endif %}</span>
+        <span class="cell-primary activity-copy">{{ clean_details }}</span>
         {% endif %}
       </td>
-      <td>{% if e.short_reason %}<span class="reason-text">{{ e.short_reason[:32] }}{% if e.short_reason|length > 32 %}…{% endif %}</span>{% else %}<span class="cell-secondary">—</span>{% endif %}</td>
+      <td>{% if e.short_reason %}<span class="reason-text reason-preview" title="{{ e.short_reason }}">{{ e.short_reason[:10] }}{% if e.short_reason|length > 10 %}…{% endif %}</span>{% else %}<span class="cell-secondary">—</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table>

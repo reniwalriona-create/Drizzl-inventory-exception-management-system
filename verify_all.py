@@ -38,6 +38,7 @@ VERIFY_SUITES = [
     "verify_official_discrepancies.py",
     "verify_grn_correction.py",
     "verify_security.py",
+    "verify_visualization_filters.py",
 ]
 
 FINAL_INTEGRITY_CHECK = "verify_system_integrity.py"

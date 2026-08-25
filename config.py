@@ -22,6 +22,10 @@ import os
 import sys
 
 APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
+if APP_ENV not in {"development", "dev", "test", "production"}:
+    sys.exit(
+        f"FATAL: unsupported APP_ENV={APP_ENV!r}. Use development, dev, test, or production."
+    )
 IS_PRODUCTION = APP_ENV == "production"
 
 _DEV_SECRET_KEY = "dev-only-secret-never-used-in-production"
@@ -54,4 +58,14 @@ if not DATABASE_URL:
 # to constrain legitimate use.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
 
-DEBUG = not IS_PRODUCTION
+DEBUG = APP_ENV in {"development", "dev"}
+
+# Comma-separated public hostnames accepted by Flask/Werkzeug. This blocks
+# forged Host headers from influencing generated links. Local development is
+# intentionally unrestricted; production must state its public hostname(s).
+TRUSTED_HOSTS = [h.strip() for h in os.environ.get("TRUSTED_HOSTS", "").split(",") if h.strip()]
+if IS_PRODUCTION and not TRUSTED_HOSTS:
+    sys.exit(
+        "FATAL: TRUSTED_HOSTS is not set. In production, provide the public hostname(s) "
+        "as a comma-separated list, for example inventory.example.com."
+    )

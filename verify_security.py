@@ -27,7 +27,7 @@ import config
 config.DATABASE_URL = f"dbname={TEST_DB_NAME}"  # must happen before `import app`
 
 import db as db_module
-from app import app
+from app import app, _developer_error_message
 
 
 def check(label, condition, detail=""):
@@ -175,6 +175,7 @@ def run():
         os.environ["APP_ENV"] = "production"
         os.environ["SECRET_KEY"] = "test-secret-for-this-check-only"
         os.environ["DATABASE_URL"] = f"dbname={TEST_DB_NAME}"
+        os.environ["TRUSTED_HOSTS"] = "inventory.example.test"
         prod_config = importlib.reload(config)
         ok &= check("config.DEBUG is False under APP_ENV=production", prod_config.DEBUG is False)
         ok &= check("config.IS_PRODUCTION is True", prod_config.IS_PRODUCTION is True)
@@ -182,6 +183,9 @@ def run():
         os.environ.clear()
         os.environ.update(old_env)
         importlib.reload(config)
+        # This suite deliberately monkeypatches the database after import;
+        # reloading config above restores the normal development DSN.
+        config.DATABASE_URL = f"dbname={TEST_DB_NAME}"
 
     print("\n--- 9 (cont'd): production config has no hard-coded secret -- refuses to start without one ---")
     probe_env = dict(old_env)
@@ -207,6 +211,38 @@ def run():
         "app.py does not contain a hard-coded fallback secret string",
         "dev-only-secret-change-before-deploy" not in app_source and 'os.environ.get("SECRET_KEY", "' not in app_source,
     )
+
+    print("\n--- redirect and response hardening ---")
+    client = app.test_client()
+    token = get_csrf_token(client, "/login?next=https://evil.example/steal")
+    resp = client.post(
+        "/login?next=https://evil.example/steal",
+        data={"csrf_token": token, "username": "testadmin", "password": "correct-horse-battery-staple"},
+        follow_redirects=False,
+    )
+    ok &= check("login rejects an external next redirect", "evil.example" not in resp.headers.get("Location", ""))
+    ok &= check("responses block MIME sniffing", resp.headers.get("X-Content-Type-Options") == "nosniff")
+    ok &= check("responses cannot be framed", resp.headers.get("X-Frame-Options") == "DENY")
+    dashboard_response = client.get("/")
+    ok &= check("authenticated HTML is not browser-cached", dashboard_response.headers.get("Cache-Control") == "no-store")
+    visible_error = _developer_error_message(RuntimeError("database connection refused"))
+    ok &= check("technical error tells user to contact developer", "Contact the developer immediately" in visible_error)
+    ok &= check("technical error includes exception type and message", "RuntimeError: database connection refused" in visible_error)
+
+    print("\n--- manual movement edge-case validation ---")
+    for bad_quantity in ("nan", "inf", "-inf", "0", "-1"):
+        fields = dict(movement_fields, quantity=bad_quantity, movement_date="2026-08-17")
+        fields["csrf_token"] = get_csrf_token(client, "/movements/new")
+        resp = client.post("/movements/new", data=fields, follow_redirects=True)
+        ok &= check(f"quantity {bad_quantity!r} is rejected", b"Quantity must be greater than zero" in resp.data)
+    fields = dict(movement_fields, movement_type="invented_type")
+    fields["csrf_token"] = get_csrf_token(client, "/movements/new")
+    resp = client.post("/movements/new", data=fields, follow_redirects=True)
+    ok &= check("unknown movement type is rejected", b"Choose a valid movement type" in resp.data)
+    fields = dict(movement_fields, movement_date="2999-01-01")
+    fields["csrf_token"] = get_csrf_token(client, "/movements/new")
+    resp = client.post("/movements/new", data=fields, follow_redirects=True)
+    ok &= check("future-dated movement is rejected", b"cannot be in the future" in resp.data)
 
     print(f"\nDropping throwaway database {TEST_DB_NAME}...")
     drop_test_database()

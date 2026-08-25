@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 from pathlib import Path
 
 REQUIRED = {"PrNumber", "PoNumber", "GrnNumber", "SkuCode", "TotalRejectedQty", "RejectedReasons"}
@@ -31,6 +32,18 @@ def _number(value):
 def _cause(value):
     parts = [_text(part).capitalize() for part in _text(value).split(",") if _text(part)]
     return ", ".join(parts) or "Unspecified"
+
+
+def _date(value):
+    raw = _text(value)
+    if not raw:
+        return None
+    for pattern in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, pattern).date().isoformat()
+        except ValueError:
+            pass
+    return None
 
 
 def _resolve(conn, customer_id, row):
@@ -140,21 +153,29 @@ def stage_csv(conn, file_path, customer_id, filename=None):
     ).fetchone()["batch_id"]
     for number, row in enumerate(rows, 2):
         rejected = _number(row.get("TotalRejectedQty"))
+        rejected_amount = _number(row.get("TotalRejectedAmount"))
+        completed_date = _date(row.get("CompletedDate"))
         product_id, grn_id, movement_id, status, message = _resolve(conn, customer_id, row)
         if rejected is None or rejected < 0:
             status, message = "blocked", "Rejected quantity is invalid"
         elif rejected == 0:
             status, message = "ignored", "No rejected units"
+        elif _text(row.get("TotalRejectedAmount")) and (rejected_amount is None or rejected_amount < 0):
+            status, message = "blocked", "Rejected amount is invalid"
+        elif _text(row.get("CompletedDate")) and completed_date is None:
+            status, message = "blocked", "Completed date is invalid"
         conn.execute(
             """INSERT INTO staged_discrepancy_lines
                (batch_id, source_row_number, raw_data, pr_number, po_number,
                 grn_number, external_sku, product_id, accepted_qty, rejected_qty,
+                rejected_amount, completed_date,
                 rejected_reason, official_grn_id, discrepancy_movement_id,
                 review_status, review_message)
-               VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (batch_id, number, json.dumps(row), _text(row.get("PrNumber")), _text(row.get("PoNumber")),
              _text(row.get("GrnNumber")), _text(row.get("SkuCode")), product_id,
-             _number(row.get("AcceptedQty")), rejected, _cause(row.get("RejectedReasons")),
+             _number(row.get("AcceptedQty")), rejected, rejected_amount, completed_date,
+             _cause(row.get("RejectedReasons")),
              grn_id, movement_id, status, message),
         )
 
@@ -178,16 +199,24 @@ def revalidate_batch(conn, batch_id):
     for line in lines:
         row = line["raw_data"]
         rejected = _number(row.get("TotalRejectedQty"))
+        rejected_amount = _number(row.get("TotalRejectedAmount"))
+        completed_date = _date(row.get("CompletedDate"))
         product_id, grn_id, movement_id, status, message = _resolve(conn, batch["customer_id"], row)
         if rejected is None or rejected < 0:
             status, message = "blocked", "Rejected quantity is invalid"
         elif rejected == 0:
             status, message = "ignored", "No rejected units"
+        elif _text(row.get("TotalRejectedAmount")) and (rejected_amount is None or rejected_amount < 0):
+            status, message = "blocked", "Rejected amount is invalid"
+        elif _text(row.get("CompletedDate")) and completed_date is None:
+            status, message = "blocked", "Completed date is invalid"
         conn.execute(
             """UPDATE staged_discrepancy_lines
                SET product_id=?,official_grn_id=?,discrepancy_movement_id=?,
-                   review_status=?,review_message=? WHERE staged_line_id=?""",
-            (product_id, grn_id, movement_id, status, message, line["staged_line_id"]),
+                   rejected_amount=?,completed_date=?,review_status=?,review_message=?
+               WHERE staged_line_id=?""",
+            (product_id, grn_id, movement_id, rejected_amount, completed_date,
+             status, message, line["staged_line_id"]),
         )
     _validate_quantities(conn, batch_id)
     return len(lines)

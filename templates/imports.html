@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Imports - Drizzl Inventory{% endblock %}
+{% block content %}
+<style>
+  .import-choices { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:16px; margin-bottom:24px; }
+  .import-choice { display:flex; flex-direction:column; min-height:190px; color:var(--ink); text-decoration:none; transition:transform .15s ease, border-color .15s ease; }
+  .import-choice:hover { transform:translateY(-2px); border-color:var(--accent); text-decoration:none; }
+  .import-choice .eyebrow { margin-bottom:10px; }
+  .import-choice h2 { margin:0 0 8px; }
+  .import-choice .subtitle { flex:1; }
+  .import-choice-action { color:var(--accent); font-weight:750; }
+  .recent-imports-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:16px; }
+  .recent-imports-grid .panel { min-width:0; }
+  .recent-list { list-style:none; padding:0; margin:0; }
+  .recent-list li { padding:13px 0; border-bottom:1px solid var(--border); }
+  .recent-list li:last-child { border-bottom:0; }
+  .recent-file { display:block; color:var(--ink); font-weight:700; overflow-wrap:anywhere; }
+  .recent-meta { display:block; color:var(--muted); font-size:.82rem; margin:3px 0 7px; }
+  .recent-counts { display:flex; flex-wrap:wrap; gap:6px; font-size:.78rem; }
+  @media (max-width:900px) { .import-choices, .recent-imports-grid { grid-template-columns:1fr; } }
+</style>
+
+<div class="page-header"><div><div class="eyebrow">File Processing</div><h1>Imports</h1><p class="subtitle">Choose the document you are uploading. Each option keeps its existing validation, review, and posting workflow.</p></div></div>
+
+<div class="import-choices">
+  <a class="panel import-choice" href="{{ url_for('po_import') }}">
+    <div class="eyebrow">Step 1</div><h2>Purchase Orders</h2>
+    <p class="subtitle">Stage PO files, check unread or blocked lines, assign the source warehouse, and post approved orders.</p>
+    <span class="import-choice-action">Open PO Import →</span>
+  </a>
+  <a class="panel import-choice" href="{{ url_for('grn_import') }}">
+    <div class="eyebrow">Step 2</div><h2>Goods Receipts</h2>
+    <p class="subtitle">Match GRNs to posted POs, review exceptions, and post verified receipts to inventory.</p>
+    <span class="import-choice-action">Open GRN Import →</span>
+  </a>
+  <a class="panel import-choice" href="{{ url_for('discrepancy_import') }}">
+    <div class="eyebrow">Step 3</div><h2>Discrepancies</h2>
+    <p class="subtitle">Match discrepancy notes to GRNs, review blocked rows, and classify approved explanations.</p>
+    <span class="import-choice-action">Open Discrepancy Import →</span>
+  </a>
+</div>
+
+<div class="table-panel-header"><h2>Recent Imports</h2><span class="subtitle" style="margin:0;">Reopen a batch to continue its original review workflow.</span></div>
+<div class="recent-imports-grid">
+  <section class="panel">
+    <h2 style="margin-top:0;">Recent PO Imports</h2>
+    {% if po_batches %}<ul class="recent-list">{% for b in po_batches %}
+      <li><a class="recent-file" href="{{ url_for('po_import_review', batch_id=b.batch_id) }}">{{ b.source_filename }}</a>
+        <span class="recent-meta">{{ b.customer_name }} · {{ b.created_at }}</span>
+        <span class="recent-counts"><span class="badge">{{ b.summary.orders }} Orders</span><span class="badge">{{ b.summary.blocked }} Blocked</span><span class="badge">{{ b.summary.posted }} Posted</span><span class="badge">{{ b.summary.needs_source }} Need Source</span></span>
+      </li>{% endfor %}</ul>{% else %}<p class="empty">No staged PO imports yet.</p>{% endif %}
+    <a href="{{ url_for('po_import') }}">Upload or view all PO imports →</a>
+  </section>
+  <section class="panel">
+    <h2 style="margin-top:0;">Recent GRN Imports</h2>
+    {% if grn_batches %}<ul class="recent-list">{% for b in grn_batches %}
+      <li><a class="recent-file" href="{{ url_for('grn_import_review', batch_id=b.batch_id) }}">{{ b.source_filename }}</a>
+        <span class="recent-meta">{{ b.customer_name }} · {{ b.created_at }}</span>
+        <span class="recent-counts"><span class="badge">{{ b.summary.grns }} GRNs</span><span class="badge">{{ b.summary.po_not_found + b.summary.grn_already_posted + b.summary.duplicate_other_batch + b.summary.review_required + b.summary.data_error }} Need Attention</span><span class="badge">{{ b.summary.posted }} Posted</span></span>
+      </li>{% endfor %}</ul>{% else %}<p class="empty">No staged GRN imports yet.</p>{% endif %}
+    <a href="{{ url_for('grn_import') }}">Upload or view all GRN imports →</a>
+  </section>
+  <section class="panel">
+    <h2 style="margin-top:0;">Recent Discrepancy Imports</h2>
+    {% if discrepancy_batches %}<ul class="recent-list">{% for b in discrepancy_batches %}
+      <li><a class="recent-file" href="{{ url_for('discrepancy_import_review', batch_id=b.batch_id) }}">{{ b.source_filename }}</a>
+        <span class="recent-meta">{{ b.customer_name }} · {{ b.created_at }}</span>
+        <span class="recent-counts"><span class="badge">{{ b.lines }} Rows</span><span class="badge">{{ b.classified }} Posted</span><span class="badge">{{ b.blocked }} Blocked</span><span class="badge">{{ b.ignored }} Ignored</span></span>
+      </li>{% endfor %}</ul>{% else %}<p class="empty">No discrepancy imports yet.</p>{% endif %}
+    <a href="{{ url_for('discrepancy_import') }}">Upload or view all discrepancy imports →</a>
+  </section>
+</div>
+{% endblock %}

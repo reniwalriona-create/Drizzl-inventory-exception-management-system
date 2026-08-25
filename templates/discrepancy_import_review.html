@@ -36,12 +36,14 @@
 
 <div class="panel table-panel">
   <div class="table-scroll"><table>
-    <tr><th>Row</th><th>PR</th><th>PO</th><th>GRN</th><th>Master product</th><th>Rejected</th><th>Cause</th><th>Status</th><th>Message</th></tr>
+    <tr><th>Row</th><th>PR</th><th>PO</th><th>GRN</th><th>Master product</th><th>Rejected</th><th>Debit amount</th><th>Completed</th><th>Cause</th><th>Status</th><th>Message</th></tr>
     {% for line in lines %}
     <tr>
       <td>{{ line.source_row_number }}</td><td>{{ line.pr_number or '' }}</td><td>{{ line.po_number or '' }}</td><td>{{ line.grn_number or '' }}</td>
       <td>{{ (line.product_name|product_label) if line.product_name else 'Ignored/unmapped product' }}</td>
-      <td>{{ line.rejected_qty if line.rejected_qty is not none else '' }}</td><td>{{ line.rejected_reason or '' }}</td>
+      <td>{{ line.rejected_qty if line.rejected_qty is not none else '' }}</td>
+      <td>{{ "₹{:,.2f}".format(line.rejected_amount) if line.rejected_amount is not none else '—' }}</td>
+      <td>{{ line.completed_date or '—' }}</td><td>{{ line.rejected_reason or '' }}</td>
       <td><span class="badge">{{ 'Posted' if line.classified_at else line.review_status|capitalize }}</span></td>
       <td>{{ line.review_message or '' }}</td>
     </tr>

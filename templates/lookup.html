@@ -211,6 +211,33 @@
   <p class="empty">No line items parsed for this GRN.</p>
   {% endif %}
 
+  {% if grn.discrepancy_notes %}
+  <div class="callout" style="margin-top:22px; padding:20px 22px; background:var(--warn-bg); border-radius:12px;">
+    <h2 style="margin:0 0 6px;">Attached Discrepancy {{ "Note" if grn.discrepancy_notes|length == 1 else "Notes" }}</h2>
+    <p class="subtitle" style="margin:0 0 14px;">The classified discrepancy document attached to this exact official GRN. It explains the shortfall and does not deduct stock again.</p>
+    {% for note in grn.discrepancy_notes %}
+    <div{% if not loop.last %} style="margin-bottom:18px; padding-bottom:18px; border-bottom:1px solid var(--border);"{% endif %}>
+      <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+        <strong>Discrepancy Note {{ note.pr_number }}</strong>
+        <span><strong>₹{{ "{:,.2f}".format(note.rejected_amount or 0) }}</strong> Debited · {{ "%.0f"|format(note.rejected_qty or 0) }} Cans{% if note.completed_date %} · Completed {{ note.completed_date.strftime('%b %d, %Y') }}{% endif %}</span>
+      </div>
+      <table>
+        <tr><th>Customer SKU</th><th>Master Product</th><th>Rejected Cans</th><th>Debit Amount</th><th>Cause</th></tr>
+        {% for line in note.lines %}
+        <tr>
+          <td>{{ line.external_sku }}</td>
+          <td>{{ (line.product_name|product_label) if line.product_name else "Unmapped Product" }}</td>
+          <td>{{ "%.0f"|format(line.rejected_qty) if line.rejected_qty is not none else "—" }}</td>
+          <td>{{ "₹{:,.2f}".format(line.rejected_amount) if line.rejected_amount is not none else "—" }}</td>
+          <td>{{ line.rejected_reason or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <h2>Ledger movements from this GRN</h2>
   {% if grn.movements %}
   <table>

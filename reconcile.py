@@ -349,7 +349,7 @@ def resolve_grn_source_location(conn, grn_number):
     return row["source_location"] if row else None
 
 
-def stock_by_flavor(conn, location=None, sku_code=None, product_id=None):
+def stock_by_flavor(conn, location=None, sku_code=None, product_id=None, date_to=None):
     """Same as stock_by_location() but grouped by flavor (see
     _flavor_name()) instead of raw SKU code -- feeds the stock-by-location
     chart, which stacks flavors within each location bar rather than
@@ -361,7 +361,41 @@ def stock_by_flavor(conn, location=None, sku_code=None, product_id=None):
     If one ever does, check whether its logged quantity means "cans" or
     "packs" before trusting this sum (see po_quantity_by_flavor()'s
     docstring for the same caveat on the PO side)."""
-    rows = stock_by_location(conn, location=location, sku_code=sku_code, product_id=product_id)
+    if date_to is None:
+        rows = stock_by_location(conn, location=location, sku_code=sku_code, product_id=product_id)
+    else:
+        # Historical physical stock is reconstructed from the immutable
+        # movement ledger up to and including the selected end date.
+        query = """
+            SELECT l.name AS location, m.product_id, m.sku_code,
+                   COALESCE(MAX(mp.product_name), MAX(p.sku_desc), m.sku_code) AS sku_desc,
+                   SUM(m.delta) AS qty_on_hand
+            FROM (
+                SELECT location_to_id AS location_id, product_id, sku_code, quantity AS delta
+                FROM inventory_movements
+                WHERE voided=0 AND location_to_id IS NOT NULL AND movement_date::date <= ?::date
+                UNION ALL
+                SELECT location_from_id AS location_id, product_id, sku_code, -quantity AS delta
+                FROM inventory_movements
+                WHERE voided=0 AND location_from_id IS NOT NULL AND movement_date::date <= ?::date
+            ) m
+            JOIN locations l ON l.id=m.location_id
+            LEFT JOIN master_products mp ON mp.product_id=m.product_id
+            LEFT JOIN products p ON p.sku_code=m.sku_code AND m.product_id IS NULL
+            WHERE 1=1
+        """
+        params = [date_to, date_to]
+        if location:
+            query += " AND l.name=?"
+            params.append(location)
+        if sku_code:
+            query += " AND m.sku_code=?"
+            params.append(sku_code)
+        if product_id:
+            query += " AND m.product_id=?"
+            params.append(product_id)
+        query += " GROUP BY l.name,m.product_id,m.sku_code ORDER BY l.name"
+        rows = conn.execute(query, params).fetchall()
     by_key = {}
     for r in rows:
         flavor = _flavor_name(r["sku_desc"]) or r["sku_code"]
@@ -421,9 +455,11 @@ def damaged_units_by_cause(conn, sku_code=None, location=None, product_id=None, 
     query = """
         WITH loss_events AS (
           SELECT COALESCE(NULLIF(m.notes, ''), NULLIF(m.reason, ''), 'Unspecified') AS cause,
-                 m.quantity, m.product_id, m.sku_code, lf.name AS location_name, m.movement_date::date AS event_date
+                 m.quantity, m.product_id, m.sku_code, lf.name AS location_name,
+                 m.movement_date::date AS event_date, gm.po_number
           FROM inventory_movements m
           LEFT JOIN locations lf ON lf.id=m.location_from_id
+          LEFT JOIN grn_receipts gm ON gm.grn_id=m.source_grn_id
           WHERE m.movement_type='loss' AND m.voided=0
             AND (m.reference_type != 'grn_discrepancy' OR NOT EXISTS (
               SELECT 1 FROM staged_discrepancy_lines s
@@ -432,13 +468,15 @@ def damaged_units_by_cause(conn, sku_code=None, location=None, product_id=None, 
           UNION ALL
           SELECT COALESCE(NULLIF(s.rejected_reason,''),'Unspecified') AS cause,
                  s.rejected_qty AS quantity, s.product_id, s.external_sku AS sku_code,
-                 l.name AS location_name, COALESCE(g.grn_date::date, s.classified_at::date) AS event_date
+                 l.name AS location_name, COALESCE(g.grn_date::date, s.classified_at::date) AS event_date,
+                 s.po_number
           FROM staged_discrepancy_lines s
           JOIN grn_receipts g ON g.grn_id=s.official_grn_id
           JOIN locations l ON l.id=g.source_location_id
           WHERE s.classified_at IS NOT NULL AND g.voided=0
         )
-        SELECT cause, SUM(quantity) AS total_damaged, COUNT(*) AS n_events
+        SELECT cause, SUM(quantity) AS total_damaged,
+               COUNT(DISTINCT po_number) AS n_pos
         FROM loss_events WHERE 1=1
     """
     params = []
@@ -458,6 +496,139 @@ def damaged_units_by_cause(conn, sku_code=None, location=None, product_id=None, 
         query += " AND event_date <= ?::date"
         params.append(date_to)
     query += " GROUP BY cause ORDER BY total_damaged DESC"
+    return conn.execute(query, params).fetchall()
+
+
+def discrepancy_units_by_cause(
+    conn, location=None, product_id=None, date_from=None, date_to=None,
+    date_source="grn",
+):
+    """Classified discrepancy-CSV quantities grouped by their stated cause.
+
+    This report deliberately excludes manual ``loss`` movements.  Its date is
+    the linked official GRN's external create date, which is the consistent
+    business date chosen for discrepancy visualizations.
+    """
+    if date_source not in {"grn", "completed"}:
+        raise ValueError("Unsupported discrepancy date source.")
+    date_column = "s.completed_date" if date_source == "completed" else "g.create_date::timestamp::date"
+    query = f"""
+        SELECT COALESCE(NULLIF(s.rejected_reason, ''), 'Unspecified') AS cause,
+               SUM(s.rejected_qty) AS total_damaged,
+               COUNT(DISTINCT s.po_number) AS n_pos
+        FROM staged_discrepancy_lines s
+        JOIN grn_receipts g ON g.grn_id = s.official_grn_id AND g.voided = 0
+        JOIN locations l ON l.id = g.source_location_id
+        WHERE s.classified_at IS NOT NULL
+          AND {date_column} IS NOT NULL
+    """
+    params = []
+    if product_id:
+        query += " AND s.product_id = ?"
+        params.append(product_id)
+    if location:
+        query += " AND l.name = ?"
+        params.append(location)
+    if date_from:
+        query += f" AND {date_column} >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += f" AND {date_column} <= ?::date"
+        params.append(date_to)
+    query += " GROUP BY cause ORDER BY total_damaged DESC"
+    return conn.execute(query, params).fetchall()
+
+
+def discrepancy_trend_over_time(
+    conn, location=None, product_id=None, date_from=None, date_to=None,
+    date_source="grn",
+):
+    """Classified discrepancy quantity over either GRN or completion date."""
+    if date_source not in {"grn", "completed"}:
+        raise ValueError("Unsupported discrepancy date source.")
+    date_column = "s.completed_date" if date_source == "completed" else "g.create_date::timestamp::date"
+    query = f"""
+        SELECT {date_column} AS date,
+               SUM(s.rejected_qty) AS qty
+        FROM staged_discrepancy_lines s
+        JOIN grn_receipts g ON g.grn_id = s.official_grn_id AND g.voided = 0
+        JOIN locations l ON l.id = g.source_location_id
+        WHERE s.classified_at IS NOT NULL
+          AND {date_column} IS NOT NULL
+    """
+    params = []
+    if product_id:
+        query += " AND s.product_id = ?"
+        params.append(product_id)
+    if location:
+        query += " AND l.name = ?"
+        params.append(location)
+    if date_from:
+        query += f" AND {date_column} >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += f" AND {date_column} <= ?::date"
+        params.append(date_to)
+    query += f" GROUP BY {date_column} ORDER BY date"
+    return conn.execute(query, params).fetchall()
+
+
+def discrepancy_debit_summary(conn, date_from=None, date_to=None):
+    """Classified discrepancy money by the CSV's CompletedDate.
+
+    Each source row contributes its own TotalRejectedAmount exactly once.
+    Unclassified/blocked rows are excluded because they are not yet official
+    dashboard reporting.
+    """
+    query = """
+        SELECT COALESCE(SUM(rejected_amount), 0) AS total_debited,
+               COUNT(DISTINCT pr_number) AS discrepancy_notes,
+               COUNT(DISTINCT po_number) AS purchase_orders,
+               COUNT(*) AS discrepancy_lines
+        FROM staged_discrepancy_lines
+        WHERE classified_at IS NOT NULL
+          AND rejected_amount IS NOT NULL
+          AND completed_date IS NOT NULL
+    """
+    params = []
+    if date_from:
+        query += " AND completed_date >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += " AND completed_date <= ?::date"
+        params.append(date_to)
+    return conn.execute(query, params).fetchone()
+
+
+def discrepancy_debits_by_po(conn, date_from=None, date_to=None, location=None, product_id=None):
+    """Classified debit amount grouped by its PO for dashboard review."""
+    query = """
+        SELECT s.po_number,
+               COUNT(DISTINCT s.pr_number) AS discrepancy_notes,
+               MIN(s.completed_date) AS first_completed_date,
+               MAX(s.completed_date) AS last_completed_date,
+               SUM(s.rejected_amount) AS total_debited
+        FROM staged_discrepancy_lines s
+        JOIN grn_receipts g ON g.grn_id=s.official_grn_id AND g.voided=0
+        JOIN locations l ON l.id=g.source_location_id
+        WHERE s.classified_at IS NOT NULL
+          AND s.rejected_amount IS NOT NULL
+          AND s.completed_date IS NOT NULL
+    """
+    params = []
+    if date_from:
+        query += " AND s.completed_date >= ?::date"
+        params.append(date_from)
+    if date_to:
+        query += " AND s.completed_date <= ?::date"
+        params.append(date_to)
+    if location:
+        query += " AND l.name = ?"
+        params.append(location)
+    if product_id:
+        query += " AND s.product_id = ?"
+        params.append(product_id)
+    query += " GROUP BY s.po_number ORDER BY total_debited DESC, s.po_number"
     return conn.execute(query, params).fetchall()
 
 
@@ -643,6 +814,41 @@ def official_discrepancies(conn, sku_code=None, product_id=None):
     return rows
 
 
+def po_grn_pairs_needing_discrepancy_notes(conn, product_id=None, location=None):
+    """Distinct active PO/GRN pairs with a real quantity difference and
+    no classified discrepancy-note row attached to that GRN.
+
+    A PO is included only when at least one official line has ordered
+    quantity different from received quantity. Fully matched POs never
+    appear in this warning.
+    """
+    differing_pos = {
+        row["po_number"] for row in official_discrepancies(conn, product_id=product_id)
+        if float(row["computed_shortfall_qty"] or 0) != 0
+    }
+    if not differing_pos:
+        return []
+    placeholders = ",".join("?" for _ in differing_pos)
+    params = list(differing_pos)
+    location_clause = ""
+    if location:
+        location_clause = " AND l.name = ?"
+        params.append(location)
+    return conn.execute(
+        f"""SELECT DISTINCT po.po_number, g.grn_number
+            FROM purchase_orders po
+            JOIN grn_receipts g ON g.po_id=po.po_id AND g.voided=0
+            JOIN locations l ON l.id=g.source_location_id
+            WHERE po.po_number IN ({placeholders}){location_clause}
+              AND NOT EXISTS (
+                SELECT 1 FROM staged_discrepancy_lines s
+                WHERE s.official_grn_id=g.grn_id AND s.classified_at IS NOT NULL
+              )
+            ORDER BY po.po_number, g.grn_number""",
+        params,
+    ).fetchall()
+
+
 def po_quantity_by_facility(conn, sku_code=None, product_id=None, date_from=None, date_to=None):
     """Total ordered quantity (summed across every SKU on the PO) per
     Scootsy receiving facility -- feeds the "PO quantity by warehouse"
@@ -662,10 +868,10 @@ def po_quantity_by_facility(conn, sku_code=None, product_id=None, date_from=None
         conditions.append("p.product_id = ?")
         params.append(product_id)
     if date_from:
-        conditions.append("po.po_date >= ?::date")
+        conditions.append("po.external_po_created_at::date >= ?::date")
         params.append(date_from)
     if date_to:
-        conditions.append("po.po_date <= ?::date")
+        conditions.append("po.external_po_created_at::date <= ?::date")
         params.append(date_to)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
@@ -748,10 +954,10 @@ def po_quantity_by_flavor(conn, date_from=None, date_to=None):
     """
     params = []
     if date_from:
-        query += " AND po.po_date >= ?::date"
+        query += " AND po.external_po_created_at::date >= ?::date"
         params.append(date_from)
     if date_to:
-        query += " AND po.po_date <= ?::date"
+        query += " AND po.external_po_created_at::date <= ?::date"
         params.append(date_to)
     query += " GROUP BY pli.item_code"
     rows = conn.execute(query, params).fetchall()
@@ -906,22 +1112,33 @@ def purchase_orders_by_facility(conn, facility=None):
     return conn.execute(query, params).fetchall()
 
 
-def po_grn_fulfillment(conn, status=None):
+def po_grn_fulfillment(conn, status=None, date_from=None, date_to=None):
     """One row per official PO showing whether an active official GRN
     has resolved it. A posted GRN closes the whole canonical PO commitment;
     quantity differences are reported separately as discrepancies.
     """
-    pos = conn.execute(
-        """
+    query = """
         SELECT po.*, loc.name AS source_location_name,
                COALESCE(SUM(pli.qty), 0) AS total_ordered_qty
         FROM purchase_orders po
         LEFT JOIN locations loc ON loc.id = po.source_location_id
         LEFT JOIN po_line_items pli ON pli.po_number = po.po_number
+    """
+    params = []
+    conditions = []
+    if date_from:
+        conditions.append("po.external_po_created_at::date >= ?::date")
+        params.append(date_from)
+    if date_to:
+        conditions.append("po.external_po_created_at::date <= ?::date")
+        params.append(date_to)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += """
         GROUP BY po.po_id, loc.name
         ORDER BY po.expected_delivery_date NULLS LAST, po.po_number
-        """
-    ).fetchall()
+    """
+    pos = conn.execute(query, params).fetchall()
     result = []
     for raw_po in pos:
         po = dict(raw_po)
@@ -1054,6 +1271,35 @@ def lookup_document(conn, query):
                 "SELECT * FROM grn_line_items WHERE grn_id = ? ORDER BY sku_code", (grn_id,)
             ).fetchall()
         ]
+        # Financial/cause document completing the PO -> GRN -> discrepancy
+        # trace. Only classified rows are official reporting; staged,
+        # blocked, and ignored rows must not appear as attached documents.
+        note_rows = conn.execute(
+            """SELECT pr_number, MIN(completed_date) AS completed_date,
+                      SUM(rejected_qty) AS rejected_qty,
+                      SUM(rejected_amount) AS rejected_amount,
+                      COUNT(*) AS line_count
+               FROM staged_discrepancy_lines
+               WHERE official_grn_id=? AND classified_at IS NOT NULL
+               GROUP BY pr_number ORDER BY MIN(completed_date),pr_number""",
+            (grn_id,),
+        ).fetchall()
+        grn_dict["discrepancy_notes"] = []
+        for note_row in note_rows:
+            note = dict(note_row)
+            note["lines"] = [
+                dict(r) for r in conn.execute(
+                    """SELECT s.external_sku,s.rejected_qty,s.rejected_amount,
+                              s.rejected_reason,s.completed_date,mp.product_name
+                       FROM staged_discrepancy_lines s
+                       LEFT JOIN master_products mp ON mp.product_id=s.product_id
+                       WHERE s.official_grn_id=? AND s.pr_number=?
+                         AND s.classified_at IS NOT NULL
+                       ORDER BY s.source_row_number""",
+                    (grn_id, note["pr_number"]),
+                ).fetchall()
+            ]
+            grn_dict["discrepancy_notes"].append(note)
         if grn["po_id"] is not None:
             # Canonical -- scoped via source_grn_line_item_id ->
             # grn_line_items.grn_id, never plain reference_id text,

@@ -5,11 +5,13 @@ a dashboard built on reconcile.py's reports, and a Master-Product-only manual mo
 production) that no document exists for.
 """
 import logging
+import math
 import os
 import re
 import secrets
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import (
@@ -67,6 +69,12 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+def _developer_error_message(exc, action="The operation failed"):
+    """Expose the technical failure as explicitly requested for this prototype."""
+    detail = str(exc).strip() or exc.__class__.__name__
+    return f"{action}. Contact the developer immediately and send them this error: {exc.__class__.__name__}: {detail}"
+
 app = Flask(__name__)
 # SECRET_KEY: config.py already refuses to start with APP_ENV=production
 # and no real SECRET_KEY set -- there is deliberately no insecure
@@ -74,6 +82,37 @@ app = Flask(__name__)
 # labeled dev-only default (Phase 12).
 app.secret_key = config.SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_BYTES
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=config.IS_PRODUCTION,
+)
+if config.TRUSTED_HOSTS:
+    app.config["TRUSTED_HOSTS"] = config.TRUSTED_HOSTS
+
+
+@app.after_request
+def _security_headers(response):
+    """Browser-level guardrails that are safe for every response."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if config.IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if current_user.is_authenticated and response.mimetype == "text/html":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _safe_next_url(value):
+    """Allow only local paths after login; never redirect to another site."""
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/") or parsed.path.startswith("//"):
+        return None
+    return value
 
 
 @app.template_filter("product_label")
@@ -164,11 +203,56 @@ def _date_filter_args():
     return "all", None, None
 
 
-def _build_chart_data(conn, location, product_id, damaged_by_cause, date_from=None, date_to=None):
+def _optional_date_range(prefix):
+    """Parse one visualization-specific inclusive date range."""
+    parsed = []
+    for suffix in ("date_from", "date_to"):
+        raw = (request.args.get(f"{prefix}_{suffix}") or "").strip()
+        if not raw:
+            parsed.append(None)
+            continue
+        try:
+            parsed.append(datetime.strptime(raw, "%Y-%m-%d").date().isoformat())
+        except ValueError:
+            return None, None, "Enter dates in YYYY-MM-DD format."
+    if parsed[0] and parsed[1] and parsed[0] > parsed[1]:
+        return None, None, "The From date cannot be later than the To date."
+    return parsed[0], parsed[1], None
+
+
+def _visualization_date_range(prefix):
+    """Resolve one report's quick range or its explicit custom dates."""
+    period = request.args.get(f"{prefix}_period", "all")
+    today = date.today()
+    days = {"7d": 7, "15d": 15, "30d": 30}
+    if period in days:
+        return period, (today - timedelta(days=days[period] - 1)).isoformat(), today.isoformat(), None
+    manual_from = request.args.get(f"{prefix}_date_from")
+    manual_to = request.args.get(f"{prefix}_date_to")
+    if period == "custom" or manual_from or manual_to:
+        date_from, date_to, error = _optional_date_range(prefix)
+        return "custom", date_from, date_to, error
+    return "all", None, None, None
+
+
+def _build_chart_data(
+    conn,
+    stock_location=None,
+    stock_product_id=None,
+    po_product_id=None,
+    po_date_from=None,
+    po_date_to=None,
+    discrepancy_location=None,
+    discrepancy_product_id=None,
+    discrepancy_date_from=None,
+    discrepancy_date_to=None,
+):
     """Pivots reconcile.py's flat query results into the label/dataset
     shape Chart.js wants. Kept as plain dicts/lists (not sqlite3.Row) so
     Jinja's |tojson filter can serialize them directly."""
-    stock_rows = reconcile.stock_by_flavor(conn, location=location, product_id=product_id)
+    stock_rows = reconcile.stock_by_flavor(
+        conn, location=stock_location, product_id=stock_product_id
+    )
     stock_flavors = sorted({r["flavor"] for r in stock_rows})
     stock_locations = sorted({r["location"] for r in stock_rows})
     stock_chart = {
@@ -185,24 +269,40 @@ def _build_chart_data(conn, location, product_id, damaged_by_cause, date_from=No
         ],
     }
 
-    po_facility_rows = reconcile.po_quantity_by_facility(conn, product_id=product_id, date_from=date_from, date_to=date_to)
+    po_facility_rows = reconcile.po_quantity_by_facility(
+        conn, product_id=po_product_id, date_from=po_date_from, date_to=po_date_to
+    )
     po_facility_chart = {
         "labels": [r["facility"] for r in po_facility_rows],
         "data": [r["total_qty"] for r in po_facility_rows],
     }
 
-    damage_trend_rows = reconcile.damage_trend_over_time(conn, product_id=product_id, location=location, date_from=date_from, date_to=date_to)
+    discrepancy_cause_rows = reconcile.discrepancy_units_by_cause(
+        conn, product_id=discrepancy_product_id, location=discrepancy_location,
+        date_from=discrepancy_date_from, date_to=discrepancy_date_to,
+    )
+    damage_trend_rows = reconcile.discrepancy_trend_over_time(
+        conn, product_id=discrepancy_product_id, location=discrepancy_location,
+        date_from=discrepancy_date_from, date_to=discrepancy_date_to,
+    )
     damage_trend_chart = {
-        "labels": [r["date"] for r in damage_trend_rows],
+        "labels": [
+            r["date"].strftime("%b %d, %Y")
+            if hasattr(r["date"], "strftime")
+            else datetime.fromisoformat(str(r["date"])).strftime("%b %d, %Y")
+            for r in damage_trend_rows
+        ],
         "data": [r["qty"] for r in damage_trend_rows],
     }
 
     damage_cause_chart = {
-        "labels": [r["cause"] for r in damaged_by_cause],
-        "data": [r["total_damaged"] for r in damaged_by_cause],
+        "labels": [r["cause"] for r in discrepancy_cause_rows],
+        "data": [r["total_damaged"] for r in discrepancy_cause_rows],
     }
 
-    flavor_rows = reconcile.po_quantity_by_flavor(conn, date_from=date_from, date_to=date_to)
+    flavor_rows = reconcile.po_quantity_by_flavor(
+        conn, date_from=po_date_from, date_to=po_date_to
+    )
     flavor_popularity_chart = {
         "labels": [r["flavor"] for r in flavor_rows],
         "data": [r["total_qty"] for r in flavor_rows],
@@ -252,8 +352,7 @@ def login():
             return render_template("login.html"), 401
         login_user(AppUser(row))
         flash(f"Welcome back, {row['username']}.", "success")
-        next_url = request.args.get("next")
-        return redirect(next_url or url_for("dashboard"))
+        return redirect(_safe_next_url(request.args.get("next")) or url_for("dashboard"))
     return render_template("login.html")
 
 
@@ -295,8 +394,6 @@ def dashboard():
                 product_id = int(product_id)
             except ValueError:
                 product_id = None
-        facility = request.args.get("facility") or None
-
         # Never filtered, never hidden -- a negative balance is a real
         # bookkeeping problem regardless of what the location/product filter
         # above happens to be set to.
@@ -318,28 +415,115 @@ def dashboard():
             "awaiting": sum(r["fulfillment_status"] == "awaiting_grn" for r in fulfillment_rows),
         }
 
+        awaiting_note_pos = {
+            row["po_number"] for row in reconcile.po_grn_pairs_needing_discrepancy_notes(conn)
+        }
+
         return render_template(
             "dashboard.html",
             stock=stock_rows,
-            damaged_by_cause=reconcile.damaged_units_by_cause(conn, product_id=product_id, location=location),
-            official_discrepancies=reconcile.official_discrepancies(conn, product_id=product_id),
-            flags=reconcile.unresolved_flags(conn),
             negative_balances=negatives,
             inventory_flags=reconcile.unresolved_inventory_flags(conn),
             voided_entries=reconcile.voided_entries(conn),
-            purchase_orders=reconcile.purchase_orders_by_facility(conn, facility=facility),
             unallocated_commitments=reconcile.unallocated_commitments(conn),
             po_counts=po_counts,
+            awaiting_discrepancy_notes=len(awaiting_note_pos),
+            debit_summary=reconcile.discrepancy_debit_summary(conn),
             all_locations=conn.execute("SELECT name FROM locations ORDER BY name").fetchall(),
             all_products=conn.execute(
                 "SELECT product_id, barcode, product_name FROM master_products WHERE active = TRUE ORDER BY product_name"
             ).fetchall(),
-            all_facilities=conn.execute(
-                "SELECT DISTINCT facility_name FROM purchase_orders WHERE facility_name IS NOT NULL ORDER BY facility_name"
-            ).fetchall(),
             selected_location=location,
             selected_product_id=product_id,
-            selected_facility=facility,
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/debits-losses")
+def debits_losses():
+    period, date_from, date_to, date_error = _visualization_date_range("loss")
+    if date_error:
+        flash(date_error, "error")
+    location = request.args.get("location") or None
+    product_id = request.args.get("product") or None
+    if product_id:
+        try:
+            product_id = int(product_id)
+        except ValueError:
+            product_id = None
+    conn = get_connection()
+    try:
+        cause_rows = reconcile.discrepancy_units_by_cause(
+            conn, location=location, product_id=product_id,
+            date_from=date_from, date_to=date_to, date_source="completed",
+        )
+        trend_rows = reconcile.discrepancy_trend_over_time(
+            conn, location=location, product_id=product_id,
+            date_from=date_from, date_to=date_to, date_source="completed",
+        )
+        comparison_rows = reconcile.official_discrepancies(conn, product_id=product_id)
+        if location or date_from or date_to:
+            conditions = ["s.classified_at IS NOT NULL"]
+            params = []
+            if location:
+                conditions.append("l.name = ?")
+                params.append(location)
+            if date_from:
+                conditions.append("s.completed_date >= ?::date")
+                params.append(date_from)
+            if date_to:
+                conditions.append("s.completed_date <= ?::date")
+                params.append(date_to)
+            eligible = {
+                r["po_number"] for r in conn.execute(
+                    """SELECT DISTINCT s.po_number FROM staged_discrepancy_lines s
+                       JOIN grn_receipts g ON g.grn_id=s.official_grn_id AND g.voided=0
+                       JOIN locations l ON l.id=g.source_location_id
+                       WHERE """ + " AND ".join(conditions), params
+                ).fetchall()
+            }
+            comparison_rows = [r for r in comparison_rows if r["po_number"] in eligible]
+        # This table is about actual differences, not fully matched lines.
+        differences = [r for r in comparison_rows if float(r["computed_shortfall_qty"] or 0) != 0]
+        debit_by_po = reconcile.discrepancy_debits_by_po(
+            conn, date_from=date_from, date_to=date_to,
+            location=location, product_id=product_id,
+        )
+        total_ordered = sum(float(r["ordered_qty"] or 0) for r in comparison_rows)
+        total_shortfall = sum(max(float(r["computed_shortfall_qty"] or 0), 0) for r in comparison_rows)
+        total_lost = sum(float(r["total_damaged"] or 0) for r in cause_rows)
+        # An unposted note has no CompletedDate, so this operational warning
+        # deliberately ignores the page's date range. Product and location
+        # still narrow it because those facts exist before a note is posted.
+        pairs_needing_notes = reconcile.po_grn_pairs_needing_discrepancy_notes(
+            conn, product_id=product_id, location=location
+        )
+        return render_template(
+            "debits_losses.html",
+            debit_by_po=debit_by_po,
+            cause_rows=cause_rows,
+            differences=differences,
+            summary={
+                "total_debited": sum(float(r["total_debited"] or 0) for r in debit_by_po),
+                "purchase_orders": len(debit_by_po),
+                "discrepancy_notes": sum(int(r["discrepancy_notes"] or 0) for r in debit_by_po),
+                "cans_lost": total_lost,
+                "shortfall": total_shortfall,
+                "ordered": total_ordered,
+                "shortfall_rate": (100 * total_shortfall / total_ordered) if total_ordered else 0,
+                "pairs_needing_notes": len(pairs_needing_notes),
+            },
+            charts={
+                "damage_cause": {"labels": [r["cause"] for r in cause_rows], "data": [r["total_damaged"] for r in cause_rows]},
+                "damage_trend": {
+                    "labels": [r["date"].strftime("%b %d, %Y") for r in trend_rows],
+                    "data": [r["qty"] for r in trend_rows],
+                },
+            },
+            period=period, date_from=date_from, date_to=date_to,
+            selected_location=location, selected_product_id=product_id,
+            all_locations=conn.execute("SELECT name FROM locations ORDER BY name").fetchall(),
         )
     finally:
         conn.close()
@@ -349,27 +533,51 @@ def dashboard():
 def visualizations():
     conn = get_connection()
     try:
-        location = request.args.get("location") or None
-        product_id = request.args.get("product") or None
-        if product_id:
+        def product_arg(name):
+            raw = request.args.get(name) or None
             try:
-                product_id = int(product_id)
+                return int(raw) if raw else None
             except ValueError:
-                product_id = None
-        period, date_from, date_to = _date_filter_args()
-        damaged_by_cause = reconcile.damaged_units_by_cause(
-            conn, product_id=product_id, location=location, date_from=date_from, date_to=date_to
-        )
+                return None
+
+        stock_location = request.args.get("stock_location") or None
+        stock_product_id = product_arg("stock_product")
+        po_product_id = product_arg("po_product")
+        discrepancy_location = request.args.get("discrepancy_location") or None
+        discrepancy_product_id = product_arg("discrepancy_product")
+        po_period, po_date_from, po_date_to, po_error = _visualization_date_range("po")
+        discrepancy_period, discrepancy_date_from, discrepancy_date_to, discrepancy_error = _visualization_date_range("discrepancy")
+        for message in (po_error, discrepancy_error):
+            if message:
+                flash(message, "error")
         return render_template(
             "visualizations.html",
             all_locations=conn.execute("SELECT name FROM locations ORDER BY name").fetchall(),
             all_products=conn.execute(
                 "SELECT product_id, barcode, product_name FROM master_products WHERE active = TRUE ORDER BY product_name"
             ).fetchall(),
-            selected_location=location,
-            selected_product_id=product_id,
-            period=period, date_from=date_from, date_to=date_to,
-            charts=_build_chart_data(conn, location, product_id, damaged_by_cause, date_from, date_to),
+            stock_location=stock_location,
+            stock_product_id=stock_product_id,
+            po_product_id=po_product_id,
+            po_period=po_period,
+            po_date_from=po_date_from, po_date_to=po_date_to,
+            discrepancy_location=discrepancy_location,
+            discrepancy_product_id=discrepancy_product_id,
+            discrepancy_period=discrepancy_period,
+            discrepancy_date_from=discrepancy_date_from,
+            discrepancy_date_to=discrepancy_date_to,
+            charts=_build_chart_data(
+                conn,
+                stock_location=stock_location,
+                stock_product_id=stock_product_id,
+                po_product_id=po_product_id,
+                po_date_from=po_date_from,
+                po_date_to=po_date_to,
+                discrepancy_location=discrepancy_location,
+                discrepancy_product_id=discrepancy_product_id,
+                discrepancy_date_from=discrepancy_date_from,
+                discrepancy_date_to=discrepancy_date_to,
+            ),
         )
     finally:
         conn.close()
@@ -377,18 +585,41 @@ def visualizations():
 
 @app.route("/po-grn-tracker")
 def po_grn_tracker():
-    allowed = {"awaiting_grn", "grn_posted", "grn_posted_discrepancy", "voided"}
+    allowed = {"awaiting_grn", "needs_discrepancy", "grn_posted", "grn_posted_discrepancy", "voided"}
     selected_status = request.args.get("status") or None
     if selected_status not in allowed:
         selected_status = None
+    tracker_period, tracker_date_from, tracker_date_to, tracker_error = _visualization_date_range("tracker")
+    if tracker_error:
+        flash(tracker_error, "error")
     conn = get_connection()
     try:
-        all_rows = reconcile.po_grn_fulfillment(conn)
-        counts = {key: sum(r["fulfillment_status"] == key for r in all_rows) for key in allowed}
-        rows = all_rows if selected_status is None else [r for r in all_rows if r["fulfillment_status"] == selected_status]
+        all_rows = reconcile.po_grn_fulfillment(
+            conn, date_from=tracker_date_from, date_to=tracker_date_to
+        )
+        needs_discrepancy_pos = {
+            row["po_number"] for row in reconcile.po_grn_pairs_needing_discrepancy_notes(conn)
+        }
+        counts = {
+            key: (
+                sum(r["po_number"] in needs_discrepancy_pos for r in all_rows)
+                if key == "needs_discrepancy"
+                else sum(r["fulfillment_status"] == key for r in all_rows)
+            )
+            for key in allowed
+        }
+        if selected_status == "needs_discrepancy":
+            rows = [r for r in all_rows if r["po_number"] in needs_discrepancy_pos]
+        elif selected_status:
+            rows = [r for r in all_rows if r["fulfillment_status"] == selected_status]
+        else:
+            rows = all_rows
         return render_template(
             "po_grn_tracker.html", rows=rows, counts=counts,
             selected_status=selected_status, total_rows=len(all_rows),
+            tracker_period=tracker_period,
+            tracker_date_from=tracker_date_from,
+            tracker_date_to=tracker_date_to,
         )
     finally:
         conn.close()
@@ -409,13 +640,29 @@ def new_movement():
                 if product is None:
                     raise ValueError("That Master Product does not exist or is inactive.")
                 sku_code = product["barcode"]
-                quantity = float(request.form["quantity"])
-                if quantity <= 0:
+                try:
+                    quantity = float(request.form["quantity"])
+                except (KeyError, TypeError, ValueError):
+                    raise ValueError("Enter a valid quantity greater than zero.")
+                if not math.isfinite(quantity) or quantity <= 0:
                     raise ValueError("Quantity must be greater than zero")
 
-                movement_type = request.form["movement_type"]
+                movement_type = request.form.get("movement_type")
+                if movement_type not in MOVEMENT_TYPES:
+                    raise ValueError("Choose a valid movement type.")
+                raw_movement_date = (request.form.get("movement_date") or "").strip()
+                try:
+                    movement_day = datetime.strptime(raw_movement_date, "%Y-%m-%d").date()
+                except ValueError:
+                    raise ValueError("Enter a valid movement date in YYYY-MM-DD format.")
+                if movement_day > date.today():
+                    raise ValueError("Movement date cannot be in the future.")
+                movement_date = movement_day.isoformat()
                 location_from = request.form.get("location_from") or None
                 location_to = request.form.get("location_to") or None
+                for location_name in {location_from, location_to} - {None}:
+                    if conn.execute("SELECT 1 FROM locations WHERE name=?", (location_name,)).fetchone() is None:
+                        raise ValueError("That warehouse location does not exist. Contact the developer to add it.")
 
                 # A movement with no location on either side is invisible to
                 # stock_by_location() -- it gets saved but silently counts
@@ -470,6 +717,13 @@ def new_movement():
                         "SELECT id FROM locations WHERE name = ?", (location_from,)
                     ).fetchone()
                     location_id = location_row["id"] if location_row else None
+                    # Serialize stock-removing checks for the same product and
+                    # location until this transaction commits. Without this,
+                    # two simultaneous requests could both see the same stock.
+                    conn.execute(
+                        "SELECT pg_advisory_xact_lock(?, ?)",
+                        (int(product_id), int(location_id)),
+                    )
                     available = reconcile.current_balance_by_product(conn, location_id, product_id)
                     resulting = available - quantity
                     if resulting >= 0:
@@ -485,7 +739,7 @@ def new_movement():
                 if is_negative and not (confirmed_override and confirmed_severity == "negative"):
                     pending = {
                         "severity": "negative",
-                        "movement_date": request.form["movement_date"],
+                        "movement_date": movement_date,
                         "product_id": product_id,
                         "product_name": product["product_name"],
                         "sku_code": sku_code,
@@ -503,7 +757,7 @@ def new_movement():
                 elif is_commitment_shortfall and not (confirmed_override and confirmed_severity == "commitment"):
                     pending = {
                         "severity": "commitment",
-                        "movement_date": request.form["movement_date"],
+                        "movement_date": movement_date,
                         "product_id": product_id,
                         "product_name": product["product_name"],
                         "sku_code": sku_code,
@@ -536,7 +790,7 @@ def new_movement():
 
                     movement_id = record_movement(
                         conn,
-                        movement_date=request.form["movement_date"],
+                        movement_date=movement_date,
                         sku_code=sku_code,
                         product_id=product_id,
                         movement_type=movement_type,
@@ -550,6 +804,7 @@ def new_movement():
                         notes=request.form.get("notes") or None,
                         negative_override_reason=negative_override_reason,
                         commitment_override_reason=commitment_override_reason,
+                        recorded_by=int(current_user.id),
                     )
                     if negative_override_reason:
                         record_inventory_flag(
@@ -591,9 +846,13 @@ def new_movement():
                     else:
                         flash("Movement recorded.", "success")
                     return redirect(url_for("new_movement"))
+            except ValueError as e:
+                conn.rollback()
+                flash(str(e), "error")
             except Exception as e:
                 conn.rollback()
-                flash(f"Failed to record movement: {e}", "error")
+                log.exception("Unexpected error recording manual movement")
+                flash(_developer_error_message(e, "Failed to record movement"), "error")
 
         products = conn.execute(
             "SELECT product_id, barcode, product_name, unit_size FROM master_products "
@@ -860,6 +1119,26 @@ def activity():
         conn.close()
 
 
+@app.route("/imports")
+def imports_hub():
+    """Navigation-only import hub.
+
+    The three established staging, validation, review, and posting flows
+    remain on their own routes. This page only gives operators one place
+    to enter those flows and reopen recent batches.
+    """
+    conn = get_connection()
+    try:
+        return render_template(
+            "imports.html",
+            po_batches=po_csv_staging.list_recent_batches(conn, limit=5),
+            grn_batches=grn_csv_staging.list_recent_grn_batches(conn, limit=5),
+            discrepancy_batches=discrepancy_csv_staging.list_batches(conn)[:5],
+        )
+    finally:
+        conn.close()
+
+
 @app.route("/discrepancy-import", methods=["GET", "POST"])
 def discrepancy_import():
     """Stage a Scootsy discrepancy/PR CSV. This classifies an existing
@@ -907,11 +1186,13 @@ def discrepancy_import():
                 conn.rollback()
                 flash(f"Could not import {original_name}: {exc}", "error")
                 return redirect(url_for("discrepancy_import"))
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
                 log.exception("Unexpected error importing discrepancy CSV %s", original_name)
-                flash(f"Could not import {original_name} — an unexpected error occurred.", "error")
+                flash(_developer_error_message(exc, f"Could not import {original_name}"), "error")
                 return redirect(url_for("discrepancy_import"))
+            finally:
+                dest.unlink(missing_ok=True)
 
         return render_template(
             "discrepancy_import.html",
@@ -1021,11 +1302,13 @@ def po_import():
                 conn.rollback()
                 flash(f"Could not import {original_name}: {e}", "error")
                 return redirect(url_for("po_import"))
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
                 log.exception("Unexpected error importing PO CSV %s", original_name)
-                flash(f"Could not import {original_name} -- an unexpected error occurred.", "error")
+                flash(_developer_error_message(exc, f"Could not import {original_name}"), "error")
                 return redirect(url_for("po_import"))
+            finally:
+                dest.unlink(missing_ok=True)
 
         return render_template("po_import.html", batches=po_csv_staging.list_recent_batches(conn))
     finally:
@@ -1296,11 +1579,13 @@ def grn_import():
                 conn.rollback()
                 flash(f"Could not import {original_name}: {e}", "error")
                 return redirect(url_for("grn_import"))
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
                 log.exception("Unexpected error importing GRN CSV %s", original_name)
-                flash(f"Could not import {original_name} -- an unexpected error occurred.", "error")
+                flash(_developer_error_message(exc, f"Could not import {original_name}"), "error")
                 return redirect(url_for("grn_import"))
+            finally:
+                dest.unlink(missing_ok=True)
 
         return render_template(
             "grn_import.html",
@@ -1635,20 +1920,19 @@ def bad_request(e):
 @app.errorhandler(500)
 def server_error(e):
     log.exception("Unhandled server error on %s", request.path)
-    return render_template("error.html", code=500, message="Something went wrong on our end."), 500
+    cause = getattr(e, "original_exception", None) or e
+    return render_template("error.html", code=500, message=_developer_error_message(cause)), 500
 
 
 @app.errorhandler(Exception)
 def unhandled_exception(e):
-    # Last-resort catch-all so an exception type nobody anticipated
-    # still renders the same no-detail-leaked error page instead of
-    # Flask's default (which, outside debug mode, is already generic,
-    # but this guarantees OUR page/logging, not a framework default
-    # that could change) and never the interactive debugger/traceback.
+    # Last-resort catch-all. We still never expose a traceback or the
+    # interactive debugger, but this prototype intentionally shows the
+    # exception type/message so an operator can send it to the developer.
     if isinstance(e, HTTPException):
         return e
     log.exception("Unhandled exception on %s", request.path)
-    return render_template("error.html", code=500, message="Something went wrong on our end."), 500
+    return render_template("error.html", code=500, message=_developer_error_message(e)), 500
 
 
 if __name__ == "__main__":

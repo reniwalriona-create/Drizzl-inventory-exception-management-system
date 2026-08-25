@@ -5,6 +5,22 @@
 **Stack:** Python · Flask · PostgreSQL · Werkzeug/Flask-Login · Flask-WTF
 **Focus:** inventory-ledger design, B2B document reconciliation, canonical product identity, and the operational discipline (staging, atomic posting, void/supersede) that keeps a real business's numbers trustworthy.
 
+## Current operator workflow (updated 2026-08-24)
+
+1. Upload a PO CSV, review it, assign a Drizzl source warehouse, and post the ready POs. Exact duplicates are skipped; changed same-number POs require review; unknown customer SKUs remain blocked until manually mapped to an existing Master Product.
+2. Upload a GRN CSV and post verified GRNs. The project enforces one GRN per PO, and the first posted GRN closes the entire PO commitment.
+3. GRN posting removes the **full ordered PO quantity** from the source warehouse: received units are recorded as sale and any positive `ordered - received` difference is recorded as an unclassified loss. This ensures the PO is fully removed from Drizzl inventory.
+4. Upload a discrepancy CSV only to classify the existing shortfall loss (damaged, expired, short delivery, etc.). It does **not** deduct stock again.
+5. Manual movements use existing active Master Products only. Creating a product or mapping a new customer SKU remains a terminal/developer task.
+
+The dashboard shortfall rate is calculated only from official POs with posted GRNs: `total positive (ordered - received) / total ordered`. Manual loss movements do not affect it.
+
+Dashboard warning terminology:
+
+- **Products currently below zero** is a live count of product/location balances that are negative now.
+- **Unreviewed stock warnings** are saved incidents created when a movement pushed stock below zero. They remain until marked resolved, even if a later movement restores the balance.
+- CSV validation and duplicate problems are handled on each import batch's review screen. The obsolete dashboard-level “Documents flagged for review” panel has been removed.
+
 ---
 
 ## What the system does
@@ -20,8 +36,8 @@ GRN CSV →  normalized + quarantined if it conflicts  →  official GRN  →  S
 ```
 
 - **Purchase Orders** arrive as a CSV export. A PO never moves physical inventory by itself — it creates a **commitment**, reserving stock against a future delivery.
-- **GRNs** (Goods Receipt Notes) arrive the same way and represent what was *actually* received. Only the received quantity ever becomes a sale — never the ordered quantity. Posting a GRN closes its PO's commitment in full and reduces on-hand inventory by exactly the normalized received quantity, once, per line.
-- **Discrepancy** (ordered − received) is never uploaded as its own document — it's computed fresh, on demand, from the two official records that already exist. A discrepancy is informational until a human decides what it means; nothing writes off a loss automatically.
+- **GRNs** represent what was actually received. Posting records received units as sale and records any positive ordered-minus-received shortfall as an unclassified loss, so the full PO quantity leaves the source warehouse exactly once.
+- **Discrepancy CSVs** explain the cause of an already-recorded GRN shortfall. Posting one classifies that loss for reporting and does not change stock again.
 - **Corrections never edit history.** A wrong PO source or a wrong GRN gets void/restore or void+replace treatment — the original row stays in the database, marked voided (and, for a replaced GRN, linked to its replacement via `supersedes_grn_id`), forever inspectable.
 
 ## Architecture concepts
@@ -128,6 +144,8 @@ po_posting.py             staged_purchase_orders → official purchase_orders (a
 grn_csv_staging.py        GRN CSV → staged_grns (normalization, duplicate/PO-verification checks)
 grn_posting.py             staged_grns → official grn_receipts + SALE movements + commitment close;
                            also the GRN correction/replacement service
+discrepancy_csv_staging.py discrepancy CSV → validates posted PO/GRN shortfalls and classifies
+                           existing losses without another stock movement
 catalog.py                Master Product / customer-SKU mapping lookups
 reconcile.py               All read-side calculations: stock, commitment, discrepancy, lookup
 validate.py                 Per-document-type sanity checks, logged as ingestion flags
@@ -135,7 +153,7 @@ validate.py                 Per-document-type sanity checks, logged as ingestion
 po_parser.py / grn_parser.py / debit_note_parser.py    Dormant CLI/parser fixtures; not web routes
 templates/ + static/        Flask UI (server-rendered, no JS framework)
 
-migrations/                 001–011, applied in order, each idempotent
+migrations/                 001–014, applied in order, each idempotent
 schema_postgres.sql         The current canonical schema (fresh-install target)
 
 verify_*.py                  One suite per phase/subsystem (see below)
@@ -173,7 +191,7 @@ There's no automated backup service in this repository — this is a manual, doc
 
 **Health check.** `GET /health` (no auth required) returns `{"status": "ok"}` if the process is up and can reach the database, `{"status": "unavailable"}` (503) otherwise. It reveals nothing about schema or configuration — safe to point a load balancer or uptime monitor at.
 
-**Logs.** The app logs to stderr (timestamp, level, message) — unexpected errors are logged server-side with full detail; the browser only ever sees a generic message, never a stack trace, SQL, or a filesystem path.
+**Logs.** The app logs to stderr (timestamp, level, message). At the prototype owner's request, unexpected error types/messages are also shown to signed-in operators with instructions to contact the developer; full tracebacks remain server-side only.
 
 ## Current limitations
 

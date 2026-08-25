@@ -900,6 +900,8 @@ CREATE TABLE staged_discrepancy_lines (
     product_id INTEGER REFERENCES master_products(product_id),
     accepted_qty NUMERIC,
     rejected_qty NUMERIC,
+    rejected_amount NUMERIC CHECK (rejected_amount >= 0),
+    completed_date DATE,
     rejected_reason TEXT,
     official_grn_id BIGINT REFERENCES grn_receipts(grn_id),
     discrepancy_movement_id INTEGER REFERENCES inventory_movements(id),
@@ -911,3 +913,4 @@ CREATE TABLE staged_discrepancy_lines (
 );
 CREATE INDEX idx_staged_discrepancy_batch ON staged_discrepancy_lines(batch_id);
 CREATE INDEX idx_staged_discrepancy_grn ON staged_discrepancy_lines(grn_number);
+CREATE INDEX idx_staged_discrepancy_completed_date ON staged_discrepancy_lines(completed_date);

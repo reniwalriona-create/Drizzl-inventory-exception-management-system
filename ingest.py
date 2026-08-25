@@ -537,6 +537,17 @@ def record_movement(conn, movement_date, sku_code, movement_type, quantity,
     caller's sku_code argument is never trusted, so it's safe to pass
     None for it on a canonical call. _ensure_product()/legacy `products`
     are never touched on this path."""
+    import math
+    try:
+        numeric_quantity = float(quantity)
+    except (TypeError, ValueError):
+        raise ValueError("Movement quantity must be a number.")
+    if not math.isfinite(numeric_quantity) or numeric_quantity <= 0:
+        raise ValueError("Movement quantity must be finite and greater than zero.")
+    if movement_type not in {"production", "opening_balance", "transfer", "sale", "loss"}:
+        raise ValueError("Invalid movement type.")
+    quantity = numeric_quantity
+
     if product_id is not None:
         sku_code = _canonical_sku_code(conn, product_id)
     else:
