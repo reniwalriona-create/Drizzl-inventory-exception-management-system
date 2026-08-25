@@ -8,16 +8,15 @@ Runs entirely against a disposable throwaway Postgres database
 real drizzl_inventory database, since this needs a realistic posted
 official PO to verify GRNs against.
 
-Uses the real Scootsy GRN export (GRN_0000000000002.csv) as the primary
-sample, the real PO export (PO_0000000000001.csv) for the one true
-overlapping PO (ETPPO84440 / ETP000135726), and the real PR export
-(PR_0000000000003.csv) ONLY as an independent test oracle read directly
-in this script -- never staged/imported into any application table.
+Uses repository-local public demo fixtures. The demo GRN is expanded in a
+temporary file with controlled duplicate-DN, multi-lot, and missing-PO rows;
+the public discrepancy CSV remains an independent read-only oracle.
 """
 import csv
 import sys
 import tempfile
 from decimal import Decimal
+from pathlib import Path
 
 import psycopg2
 
@@ -27,9 +26,10 @@ import grn_csv_staging as staging
 import po_csv_staging
 import po_posting
 
-REAL_PO_CSV = "/Users/demo/Desktop/Swiggy test PO GRN data/last 7 po csv/PO_0000000000001.csv"
-REAL_GRN_CSV = "/Users/demo/Desktop/Swiggy test PO GRN data/last 7 grn csv/GRN_0000000000002.csv"
-REAL_PR_CSV = "/Users/demo/Desktop/Swiggy test PO GRN data/last 7 discrepen csv /PR_0000000000003.csv"
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "synthetic"
+PO_FIXTURE = FIXTURE_DIR / "demo_po_01.csv"
+GRN_FIXTURE = FIXTURE_DIR / "demo_grn_01.csv"
+PR_FIXTURE = FIXTURE_DIR / "demo_discrepancy_01.csv"
 SCOOTSY_NAME = "Scootsy Logistics Private Limited"
 TEST_DB_NAME = "drizzl_inventory_test_phase6"
 
@@ -45,7 +45,7 @@ GRN_HEADER = [
 GRN_BASE_ROW = {
     "GrnNumber": "SYNGRN0001", "PurchaseOrderNumber": "SYNPO0001", "FacilityName": "DEMO FACILITY B",
     "SupplierCode": "DEMO-SUPPLIER-001", "VendorName": "DRIZZL DEMO VENDOR",
-    "InvoiceNumber": "GTA/999/26-27", "InvoiceDate": "2026-07-31", "CreatedAtDate": "2026-08-13 17:25:12",
+    "InvoiceNumber": "SYN-INV-STAGING", "InvoiceDate": "2026-07-31", "CreatedAtDate": "2026-08-13 17:25:12",
     "DnNumber": "", "DNQuantity": "0", "DNValue": "0.00", "SkuCode": "DEMO-SKU-001",
     "SkuDescription": "Drizzl Passionfruit | Probiotic Soda | 250 ml", "BrandName": "DRIZZL",
     "Category": "Packaged Food", "ReceivedQty": "10", "GrnLineValueWithoutTax": "600.00",
@@ -70,6 +70,20 @@ def write_csv(rows, fieldnames=GRN_HEADER):
         writer.writerow(r)
     f.close()
     return f.name
+
+
+def expanded_grn_fixture():
+    with GRN_FIXTURE.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    rows.extend([
+        grow(GrnNumber="SYN-GRN-NORM", PurchaseOrderNumber="SYN-PO-NORM", DnNumber="SYN-DN-NORM", DNQuantity="0", DNValue="0", ReceivedQty="10"),
+        grow(GrnNumber="SYN-GRN-NORM", PurchaseOrderNumber="SYN-PO-NORM", DnNumber="SYN-DN-NORM", DNQuantity="3", DNValue="180", ReceivedQty="10"),
+        grow(GrnNumber="SYN-GRN-NORM", PurchaseOrderNumber="SYN-PO-NORM", DnNumber="SYN-DN-NORM", SkuCode="DEMO-SKU-002", ReceivedQty="48", LotExpiryDate="2027-06-01"),
+        grow(GrnNumber="SYN-GRN-NORM", PurchaseOrderNumber="SYN-PO-NORM", DnNumber="SYN-DN-NORM", SkuCode="DEMO-SKU-002", ReceivedQty="24", LotExpiryDate="2027-05-01"),
+    ])
+    for sku, qty in [("DEMO-SKU-003", 72), ("DEMO-SKU-001", 240), ("DEMO-SKU-002", 48), ("DEMO-SKU-005", 144), ("DEMO-SKU-004", 96)]:
+        rows.append(grow(GrnNumber="SYN-GRN-LATE", PurchaseOrderNumber="SYN-PO-LATE", FacilityName="Synthetic Late Facility", SkuCode=sku, ReceivedQty=str(qty), LotExpiryDate=f"2027-0{(qty % 5) + 1}-01"))
+    return write_csv(rows)
 
 
 def check(label, condition, detail=""):
@@ -166,7 +180,7 @@ def product_id_for_sku(conn, sku):
 # ---------------------------------------------------------------------------
 
 def load_pr_rows():
-    with open(REAL_PR_CSV, newline="", encoding="utf-8-sig") as f:
+    with PR_FIXTURE.open(newline="", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
@@ -175,10 +189,11 @@ def load_pr_rows():
 # ---------------------------------------------------------------------------
 
 def run():
-    for path in (REAL_PO_CSV, REAL_GRN_CSV, REAL_PR_CSV):
-        if not __import__("pathlib").Path(path).exists():
-            print(f"FAIL -- real sample file not found: {path}")
+    for path in (PO_FIXTURE, GRN_FIXTURE, PR_FIXTURE):
+        if not path.exists():
+            print(f"FAIL -- synthetic fixture not found: {path}")
             return False
+    expanded_grn = expanded_grn_fixture()
 
     print(f"Creating throwaway database {TEST_DB_NAME}...")
     create_test_database()
@@ -195,22 +210,22 @@ def run():
         baseline_movements = table_count(conn, "inventory_movements")
 
         # -----------------------------------------------------------------
-        print("\n--- Setup: stage + post the real ETPPO84440 PO (the one true GRN/PO overlap) ---")
-        po_result = po_csv_staging.stage_po_csv(conn, REAL_PO_CSV, customer_id=scootsy_id, filename="PO_0000000000001.csv")
+        print("\n--- Setup: stage + post public SYN-PO-1001 ---")
+        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=scootsy_id, filename=PO_FIXTURE.name)
         conn.commit()
         po_batch_id = po_result["batch_id"]
         staged_pos = po_csv_staging.list_staged_pos(conn, po_batch_id)
-        etp_staged = next(p for p in staged_pos if p["external_po_number"] == "ETPPO84440")
-        po_csv_staging.assign_source_location(conn, po_batch_id, [etp_staged["staged_po_id"]], bangalore_id)
+        fixture_po = next(p for p in staged_pos if p["external_po_number"] == "SYN-PO-1001")
+        po_csv_staging.assign_source_location(conn, po_batch_id, [fixture_po["staged_po_id"]], bangalore_id)
         conn.commit()
-        post_result = po_posting.post_staged_purchase_orders(conn, po_batch_id, [etp_staged["staged_po_id"]])
-        ok &= check("ETPPO84440 posts cleanly", len(post_result["posted"]) == 1, str(post_result))
+        post_result = po_posting.post_staged_purchase_orders(conn, po_batch_id, [fixture_po["staged_po_id"]])
+        ok &= check("SYN-PO-1001 posts cleanly", len(post_result["posted"]) == 1, str(post_result))
         conn.commit()
-        etp_po_id = post_result["posted"][0]["po_id"]
+        fixture_po_id = post_result["posted"][0]["po_id"]
 
         # -----------------------------------------------------------------
-        print("\n--- Staging the real Scootsy GRN CSV ---")
-        grn_result = staging.stage_grn_csv(conn, REAL_GRN_CSV, customer_id=scootsy_id, filename="GRN_0000000000002.csv")
+        print("\n--- Staging public demo GRN plus controlled normalization rows ---")
+        grn_result = staging.stage_grn_csv(conn, expanded_grn, customer_id=scootsy_id, filename="demo_grn_staging.csv")
         conn.commit()
         grn_batch_id = grn_result["batch_id"]
 
@@ -226,10 +241,10 @@ def run():
             (grn_batch_id,),
         ).fetchone()["n"]
 
-        ok &= check("65 raw rows", raw_row_count == 65, f"got {raw_row_count}")
-        ok &= check("14 staged GRNs", staged_grn_count == 14, f"got {staged_grn_count}")
-        ok &= check("62 normalized staged GRN lines", line_count == 62, f"got {line_count}")
-        ok &= check("62/62 lines have product_id resolved", resolved_count == 62, f"got {resolved_count}")
+        ok &= check("11 raw rows", raw_row_count == 11, f"got {raw_row_count}")
+        ok &= check("3 staged GRNs", staged_grn_count == 3, f"got {staged_grn_count}")
+        ok &= check("10 normalized staged GRN lines", line_count == 10, f"got {line_count}")
+        ok &= check("10/10 lines have product_id resolved", resolved_count == 10, f"got {resolved_count}")
         ok &= check("no legacy products rows created", table_count(conn, "products") == 0)
 
         def staged_grn_by_number(num):
@@ -243,11 +258,9 @@ def run():
             return staging.get_staged_grn_lines(conn, g["staged_grn_id"])
 
         # -----------------------------------------------------------------
-        print("\n--- Real duplicate-DN-representation cases (Case B) ---")
+        print("\n--- Controlled duplicate-DN representation (Case B) ---")
         for grn_num, sku, expected_received, expected_dn in [
-            ("FC5000505570", "DEMO-SKU-001", 203, 13),
-            ("JCN000337364", "DEMO-SKU-001", 287, 1),
-            ("KOW000338433", "DEMO-SKU-001", 212, 4),
+            ("SYN-GRN-NORM", "DEMO-SKU-001", 10, 3),
         ]:
             g = staged_grn_by_number(grn_num)
             matching = [l for l in staging.get_staged_grn_lines(conn, g["staged_grn_id"]) if l["external_sku"] == sku]
@@ -262,13 +275,13 @@ def run():
                 ok &= check(f"{grn_num}/{sku}: 2 raw rows linked", len(source_rows) == 2, f"got {len(source_rows)}")
 
         # -----------------------------------------------------------------
-        print("\n--- Real multi-lot case (FC5000505570 / DEMO-SKU-002) ---")
-        g = staged_grn_by_number("FC5000505570")
+        print("\n--- Controlled multi-lot case (SYN-GRN-NORM / DEMO-SKU-002) ---")
+        g = staged_grn_by_number("SYN-GRN-NORM")
         lot_lines = sorted(
             [l for l in staging.get_staged_grn_lines(conn, g["staged_grn_id"]) if l["external_sku"] == "DEMO-SKU-002"],
             key=lambda l: -l["received_qty"],
         )
-        ok &= check("FC5000505570/DEMO-SKU-002: 2 normalized lines (not collapsed)", len(lot_lines) == 2, f"got {len(lot_lines)}")
+        ok &= check("SYN-GRN-NORM/DEMO-SKU-002: 2 normalized lines (not collapsed)", len(lot_lines) == 2, f"got {len(lot_lines)}")
         if len(lot_lines) == 2:
             ok &= check("lot 1 received = 48", int(lot_lines[0]["received_qty"]) == 48)
             ok &= check("lot 1 expiry = 2027-06-01", str(lot_lines[0]["lot_expiry_date"]) == "2027-06-01")
@@ -280,13 +293,10 @@ def run():
         print("\n--- PR cross-check (independent oracle, never staged) ---")
         pr_rows = load_pr_rows()
         pr_expected = [
-            ("KOW000338433", "DEMO-SKU-001", 212, 4), ("JCE000177512", "DEMO-SKU-002", 143, 1),
-            ("JCE000177512", "DEMO-SKU-006", 95, 1), ("JCN000337364", "DEMO-SKU-001", 287, 1),
-            ("CI3000151321", "DEMO-SKU-001", 95, 1), ("FC5000505570", "DEMO-SKU-001", 203, 13),
-            ("CMM000020853", "DEMO-SKU-006", 118, 2), ("JN2000179118", "DEMO-SKU-005", 215, 1),
-            ("JN2000179118", "DEMO-SKU-001", 336, 24),
+            ("SYN-GRN-1001", "DEMO-SKU-001", 18, 2),
+            ("SYN-GRN-1001", "DEMO-SKU-002", 9, 1),
         ]
-        ok &= check("PR file has 9 relevant rows", len(pr_rows) == 9, f"got {len(pr_rows)}")
+        ok &= check("public discrepancy oracle has 2 relevant rows", len(pr_rows) == 2, f"got {len(pr_rows)}")
         pr_by_key = {(r["GrnNumber"], r["SkuCode"]): r for r in pr_rows}
         for grn_num, sku, accepted, rejected in pr_expected:
             pr = pr_by_key.get((grn_num, sku))
@@ -307,36 +317,36 @@ def run():
             )
 
         # -----------------------------------------------------------------
-        print("\n--- PO verification: the one true overlap (ETP000135726 / ETPPO84440) ---")
+        print("\n--- PO verification: public fixture overlap ---")
         results = staging.revalidate_grn_batch(conn, grn_batch_id)
         conn.commit()
-        etp_grn = staged_grn_by_number("ETP000135726")
-        ok &= check("ETP000135726 resolves official_po_id = ETPPO84440's po_id", etp_grn["official_po_id"] == etp_po_id)
-        ok &= check("ETP000135726 po_verification_status = verified", etp_grn["po_verification_status"] == "verified", str(etp_grn["po_verification_errors"]))
+        fixture_grn = staged_grn_by_number("SYN-GRN-1001")
+        ok &= check("SYN-GRN-1001 resolves SYN-PO-1001's po_id", fixture_grn["official_po_id"] == fixture_po_id)
+        ok &= check("SYN-GRN-1001 po_verification_status = verified", fixture_grn["po_verification_status"] == "verified", str(fixture_grn["po_verification_errors"]))
 
-        comparison = staging.get_grn_po_comparison(conn, etp_grn["staged_grn_id"])
+        comparison = staging.get_grn_po_comparison(conn, fixture_grn["staged_grn_id"])
         comp_by_sku = {r["external_sku"]: r for r in comparison}
-        ok &= check("DEMO-SKU-001: ordered 360, received 360, discrepancy 0", comp_by_sku["DEMO-SKU-001"]["ordered_qty"] == 360 and comp_by_sku["DEMO-SKU-001"]["received_qty"] == 360 and comp_by_sku["DEMO-SKU-001"]["computed_discrepancy_qty"] == 0)
-        ok &= check("DEMO-SKU-005: ordered 72, received 72, discrepancy 0", comp_by_sku["DEMO-SKU-005"]["ordered_qty"] == 72 and comp_by_sku["DEMO-SKU-005"]["received_qty"] == 72 and comp_by_sku["DEMO-SKU-005"]["computed_discrepancy_qty"] == 0)
+        ok &= check("DEMO-SKU-001: ordered 20, received 18, discrepancy 2", comp_by_sku["DEMO-SKU-001"]["ordered_qty"] == 20 and comp_by_sku["DEMO-SKU-001"]["received_qty"] == 18 and comp_by_sku["DEMO-SKU-001"]["computed_discrepancy_qty"] == 2)
+        ok &= check("DEMO-SKU-002: ordered 10, received 9, discrepancy 1", comp_by_sku["DEMO-SKU-002"]["ordered_qty"] == 10 and comp_by_sku["DEMO-SKU-002"]["received_qty"] == 9 and comp_by_sku["DEMO-SKU-002"]["computed_discrepancy_qty"] == 1)
 
         # -----------------------------------------------------------------
-        print("\n--- Expected quarantine: the other 13 GRNs (no matching official PO in this test DB) ---")
-        other_grns = [r for r in staging.list_staged_grns(conn, grn_batch_id) if r["external_grn_number"] != "ETP000135726"]
-        ok &= check("13 other staged GRNs", len(other_grns) == 13, f"got {len(other_grns)}")
+        print("\n--- Expected quarantine: two GRNs with missing official POs ---")
+        other_grns = [r for r in staging.list_staged_grns(conn, grn_batch_id) if r["external_grn_number"] != "SYN-GRN-1001"]
+        ok &= check("2 other staged GRNs", len(other_grns) == 2, f"got {len(other_grns)}")
         all_blocked_missing_po = all(
             r["po_verification_status"] == "blocked" and
             any(e["code"] == "official_po_not_found" for e in r["po_verification_errors"])
             for r in other_grns
         )
-        ok &= check("all 13 quarantined with official_po_not_found", all_blocked_missing_po)
-        ok &= check("batch itself was NOT rejected wholesale (14 staged GRNs still present)", staged_grn_count == 14)
+        ok &= check("both quarantined with official_po_not_found", all_blocked_missing_po)
+        ok &= check("batch itself was not rejected wholesale", staged_grn_count == 3)
 
         # -----------------------------------------------------------------
         print("\n--- Revalidation after a previously-missing PO arrives ---")
         chm_sku = "DEMO-SKU-003"
         chm_product_id = product_id_for_sku(conn, chm_sku)
         insert_official_po(
-            conn, "CHMPO319767", scootsy_id, bangalore_id, "HYD IM1", "DEMO-SUPPLIER-001",
+            conn, "SYN-PO-LATE", scootsy_id, bangalore_id, "Synthetic Late Facility", "DEMO-SUPPLIER-001",
             "DRIZZL DEMO VENDOR",
             [
                 (chm_product_id, chm_sku, 72),
@@ -347,16 +357,16 @@ def run():
             ],
         )
         conn.commit()
-        chm_grn_before = staged_grn_by_number("CHM000340768")
-        ok &= check("CHM000340768 was blocked/missing-PO before", chm_grn_before["po_verification_status"] == "blocked")
+        chm_grn_before = staged_grn_by_number("SYN-GRN-LATE")
+        ok &= check("SYN-GRN-LATE was blocked/missing-PO before", chm_grn_before["po_verification_status"] == "blocked")
         staging.revalidate_grn_batch(conn, grn_batch_id)
         conn.commit()
-        chm_grn_after = staged_grn_by_number("CHM000340768")
-        ok &= check("CHM000340768 official_po_not_found is gone after PO arrives", not any(e["code"] == "official_po_not_found" for e in chm_grn_after["po_verification_errors"]))
-        ok &= check("CHM000340768 now verified", chm_grn_after["po_verification_status"] == "verified", str(chm_grn_after["po_verification_errors"]))
-        ok &= check("CHM000340768 official_po_id populated", chm_grn_after["official_po_id"] is not None)
-        ok &= check("Raw/normalization data untouched by revalidation (still 62 total lines)",
-                     conn.execute("SELECT COUNT(*) AS n FROM staged_grn_lines l JOIN staged_grns g ON g.staged_grn_id=l.staged_grn_id WHERE g.batch_id=?", (grn_batch_id,)).fetchone()["n"] == 62)
+        chm_grn_after = staged_grn_by_number("SYN-GRN-LATE")
+        ok &= check("SYN-GRN-LATE missing-PO error is gone", not any(e["code"] == "official_po_not_found" for e in chm_grn_after["po_verification_errors"]))
+        ok &= check("SYN-GRN-LATE now verified", chm_grn_after["po_verification_status"] == "verified", str(chm_grn_after["po_verification_errors"]))
+        ok &= check("SYN-GRN-LATE official_po_id populated", chm_grn_after["official_po_id"] is not None)
+        ok &= check("Raw/normalization data untouched by revalidation (still 10 total lines)",
+                     conn.execute("SELECT COUNT(*) AS n FROM staged_grn_lines l JOIN staged_grns g ON g.staged_grn_id=l.staged_grn_id WHERE g.batch_id=?", (grn_batch_id,)).fetchone()["n"] == 10)
 
         # -----------------------------------------------------------------
         print("\n--- Destination mismatch (controlled) ---")
@@ -442,9 +452,9 @@ def run():
         result = staging.validate_staged_grn(conn, partial_grn["staged_grn_id"])
         conn.commit()
         comparison = staging.get_grn_po_comparison(conn, partial_grn["staged_grn_id"])
-        rowDEMO-SKU-001 = next(row for row in comparison if row["external_sku"] == "DEMO-SKU-001")
+        row_sku_001 = next(row for row in comparison if row["external_sku"] == "DEMO-SKU-001")
         ok &= check("partial receipt (600 ordered/200 received): still verified", result["po_verification_status"] == "verified", str(result))
-        ok &= check("partial receipt: computed_discrepancy_qty = 400", rowDEMO-SKU-001["computed_discrepancy_qty"] == 400)
+        ok &= check("partial receipt: computed_discrepancy_qty = 400", row_sku_001["computed_discrepancy_qty"] == 400)
 
         # Product entirely absent from GRN -- ordered 50, GRN has 0 lines for it
         p_absent = product_id_for_sku(conn, "DEMO-SKU-002")
@@ -457,9 +467,9 @@ def run():
         staging.validate_staged_grn(conn, absent_grn["staged_grn_id"])
         conn.commit()
         comparison = staging.get_grn_po_comparison(conn, absent_grn["staged_grn_id"])
-        rowDEMO-SKU-002 = next(row for row in comparison if row["external_sku"] == "DEMO-SKU-002")
-        ok &= check("product absent from GRN: received_qty = 0", rowDEMO-SKU-002["received_qty"] == 0)
-        ok &= check("product absent from GRN: computed_discrepancy_qty = 50", rowDEMO-SKU-002["computed_discrepancy_qty"] == 50)
+        row_sku_002 = next(row for row in comparison if row["external_sku"] == "DEMO-SKU-002")
+        ok &= check("product absent from GRN: received_qty = 0", row_sku_002["received_qty"] == 0)
+        ok &= check("product absent from GRN: computed_discrepancy_qty = 50", row_sku_002["computed_discrepancy_qty"] == 50)
 
         # Over-receipt
         insert_official_po(conn, "SYNPO-OVER", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 100)])
@@ -476,7 +486,7 @@ def run():
         print("\n--- Exact-file idempotency ---")
         before_rows = table_count(conn, "grn_import_rows")
         before_grns = table_count(conn, "staged_grns")
-        r2 = staging.stage_grn_csv(conn, REAL_GRN_CSV, customer_id=scootsy_id, filename="GRN_0000000000002.csv")
+        r2 = staging.stage_grn_csv(conn, expanded_grn, customer_id=scootsy_id, filename="demo_grn_staging.csv")
         conn.commit()
         ok &= check("re-staging identical file reuses the batch", r2["batch_id"] == grn_batch_id and r2["reused_existing_batch"])
         ok &= check("no new raw rows", table_count(conn, "grn_import_rows") == before_rows)
@@ -484,16 +494,16 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Different-file, same-GRN-number conflict ---")
-        dup_grn_csv = write_csv([grow(GrnNumber="ETP000135726", PurchaseOrderNumber="ETPPO84440", ReceivedQty="999", SkuCode="DEMO-SKU-005", SkuDescription="Drizzl Orange")])
-        r3 = staging.stage_grn_csv(conn, dup_grn_csv, customer_id=scootsy_id, filename="synthetic_corrected_etp.csv")
+        dup_grn_csv = write_csv([grow(GrnNumber="SYN-GRN-1001", PurchaseOrderNumber="SYN-PO-1001", ReceivedQty="19")])
+        r3 = staging.stage_grn_csv(conn, dup_grn_csv, customer_id=scootsy_id, filename="synthetic_duplicate_grn.csv")
         conn.commit()
         ok &= check("different bytes, same GRN number -> new batch, not reused", not r3["reused_existing_batch"] and r3["batch_id"] != grn_batch_id)
         dup_staged = staging.list_staged_grns(conn, r3["batch_id"])[0]
         result = staging.validate_staged_grn(conn, dup_staged["staged_grn_id"])
         conn.commit()
         ok &= check("duplicate conflict surfaced, not verified", result["po_verification_status"] == "blocked" and any(e["code"] == "duplicate_grn_in_other_batch" for e in result["po_verification_errors"]), str(result))
-        original_still_intact = staged_grn_by_number("ETP000135726")
-        ok &= check("original staged GRN untouched by the conflicting duplicate", original_still_intact["staged_grn_id"] == etp_grn["staged_grn_id"])
+        original_still_intact = staged_grn_by_number("SYN-GRN-1001")
+        ok &= check("original staged GRN untouched by the conflicting duplicate", original_still_intact["staged_grn_id"] == fixture_grn["staged_grn_id"])
 
         # -----------------------------------------------------------------
         print("\n--- Source is never guessed ---")

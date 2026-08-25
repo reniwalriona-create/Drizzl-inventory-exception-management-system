@@ -254,8 +254,8 @@ def _normalize_candidates(candidates):
     by physical-receipt signature and classifies each group into Cases
     A-D. Returns a list of normalized-line dicts:
         {fields, errors (list), raw_row_ids (list)}
-    See PROJECT_HANDOFF.md for the full Case A-D writeup; verified by hand
-    against the real GRN_0000000000002.csv sample (65 rows -> 62 lines)."""
+    See the verification suites for synthetic Case A-D examples, including
+    duplicate-DN collapse and multi-lot preservation."""
     groups = {}
     order = []
     for c in candidates:

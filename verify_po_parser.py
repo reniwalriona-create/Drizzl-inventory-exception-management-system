@@ -1,16 +1,13 @@
-"""
-Verifies po_parser.py against the known correct values from the source PO PDF
-(CI3PO83049), read manually. Run this after any change to po_parser.py.
-"""
+"""Verifies po_parser.py against a caller-supplied synthetic PO PDF."""
 from po_parser import parse_po_pdf
 
 EXPECTED = {
-    "po_number": "CI3PO83049",
+    "po_number": "SYN-PO-PDF-1001",
     "po_date": "2026-08-06",
     "expected_delivery_date": "2026-08-21",
     "po_expiry_date": "2026-08-23",
     "vendor_name": "DRIZZL DEMO VENDOR",
-    "vendor_gstin": "29AALCG4490J1Z0",
+    "vendor_gstin": "00SYNTHETIC0000",
     "facility_name": "DEMO FACILITY A",
     "grand_total": 10214.40,
 }
@@ -49,6 +46,8 @@ def run(path):
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "demo_purchase_order.pdf"
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python verify_po_parser.py <synthetic-po.pdf>")
+    path = sys.argv[1]
     ok = run(path)
     sys.exit(0 if ok else 1)

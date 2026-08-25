@@ -201,6 +201,8 @@ def parse_po_pdf(file_path):
 if __name__ == '__main__':
     import json
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else 'demo_purchase_order.pdf'
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python po_parser.py <synthetic-po.pdf>")
+    path = sys.argv[1]
     result = parse_po_pdf(path)
     print(json.dumps(result, indent=2))

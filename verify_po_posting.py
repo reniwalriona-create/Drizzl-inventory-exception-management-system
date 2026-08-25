@@ -11,12 +11,9 @@ database. This script creates/drops its own throwaway Postgres database
 (drizzl_inventory_test_phase5) for the whole run, built from the same
 schema_postgres.sql a fresh install would use.
 
-Uses the real Scootsy PO export (PO_0000000000001.csv) for the primary
-posting checks (12 staged POs / 51 lines / 51 resolved products, per
-PROJECT_HANDOFF.md), plus small synthetic CSV fixtures and direct SQL
-fixtures for the conflict/edge-case tests that need data the real file
-doesn't contain (an unmapped SKU, a second customer, a legacy PDF-style
-line with no product_id).
+Uses the repository's public demo PO for primary posting checks, expanded
+with generated synthetic POs where atomic multi-selection needs more rows.
+Additional generated fixtures retain the original conflict and edge cases.
 """
 import csv
 import sys
@@ -30,7 +27,7 @@ import po_csv_staging as staging
 import po_posting
 import reconcile
 
-REAL_CSV_PATH = Path("/Users/demo/Desktop/Swiggy test PO GRN data/last 7 po csv/PO_0000000000001.csv")
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "demo_po_01.csv"
 SCOOTSY_NAME = "Scootsy Logistics Private Limited"
 TEST_DB_NAME = "drizzl_inventory_test_phase5"
 
@@ -71,6 +68,13 @@ def write_csv(rows, fieldnames=REAL_HEADER):
         writer.writerow(r)
     f.close()
     return f.name
+
+
+def expanded_fixture_path():
+    with FIXTURE_PATH.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    rows.extend(row(PoNumber=f"SYN-PO-POST-{n:02d}") for n in range(2, 11))
+    return write_csv(rows)
 
 
 def check(label, condition, detail=""):
@@ -140,9 +144,10 @@ def get_location_id(conn, name):
 # ---------------------------------------------------------------------------
 
 def run():
-    if not REAL_CSV_PATH.exists():
-        print(f"FAIL -- real sample CSV not found at {REAL_CSV_PATH}")
+    if not FIXTURE_PATH.exists():
+        print(f"FAIL -- synthetic fixture not found at {FIXTURE_PATH}")
         return False
+    expanded_fixture = expanded_fixture_path()
 
     print(f"Creating throwaway database {TEST_DB_NAME}...")
     create_test_database()
@@ -159,13 +164,13 @@ def run():
         baseline_grns = table_count(conn, "grn_receipts")
 
         # -----------------------------------------------------------------
-        print("\n--- Staging the real Scootsy CSV ---")
-        result = staging.stage_po_csv(conn, str(REAL_CSV_PATH), customer_id=scootsy_id, filename="PO_0000000000001.csv")
+        print("\n--- Staging public demo PO plus generated atomicity rows ---")
+        result = staging.stage_po_csv(conn, expanded_fixture, customer_id=scootsy_id, filename="demo_po_posting.csv")
         conn.commit()
         batch_real = result["batch_id"]
         summary = staging.batch_summary(conn, batch_real)
-        ok &= check("12 staged POs", summary["orders"] == 12, f"got {summary['orders']}")
-        ok &= check("51 staged lines", summary["lines"] == 51, f"got {summary['lines']}")
+        ok &= check("10 staged POs", summary["orders"] == 10, f"got {summary['orders']}")
+        ok &= check("11 staged lines", summary["lines"] == 11, f"got {summary['lines']}")
         ok &= check("0 blocked (all SKUs resolve)", summary["blocked"] == 0, f"got {summary['blocked']}")
 
         pos = sorted(staging.list_staged_pos(conn, batch_real), key=lambda p: p["staged_po_id"])
@@ -173,7 +178,7 @@ def run():
             1 for p in pos for l in staging.get_staged_po(conn, p["staged_po_id"])["lines"]
             if l["product_id"] is not None
         )
-        ok &= check("51/51 product mappings resolved", resolved == 51, f"got {resolved}")
+        ok &= check("11/11 product mappings resolved", resolved == 11, f"got {resolved}")
 
         p0, p1, p2, p3, p4, p5, p6, p7, p8, p9 = pos[:10]
 

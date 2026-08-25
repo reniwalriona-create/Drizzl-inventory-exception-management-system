@@ -120,5 +120,7 @@ def parse_debit_note_pdf(file_path):
 if __name__ == '__main__':
     import json
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else 'demo_debit_note_updated.pdf'
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python debit_note_parser.py <synthetic-debit-note.pdf>")
+    path = sys.argv[1]
     print(json.dumps(parse_debit_note_pdf(path), indent=2))

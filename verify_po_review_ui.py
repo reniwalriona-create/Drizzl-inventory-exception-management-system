@@ -12,8 +12,8 @@ those are cleaned up with an explicit DELETE at the end instead, per the
 "transactions/savepoints OR clean up deliberately" allowance. Pure
 backend-function tests use savepoints and are rolled back.
 
-Uses the real Scootsy CSV (PO_0000000000001.csv) for the main flow, plus
-small synthetic CSV fixtures for the blocked/edge-case tests.
+Uses the repository's public demo PO as the basis for the main flow, expanded
+with generated synthetic POs where bulk-selection behavior needs more rows.
 """
 import csv
 import sys
@@ -31,7 +31,8 @@ import po_csv_staging as staging
 from app import app
 from db import get_connection
 
-REAL_CSV_PATH = Path("/Users/demo/Desktop/Swiggy test PO GRN data/last 7 po csv/PO_0000000000001.csv")
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "demo_po_01.csv"
+REVIEW_FIXTURE_NAME = "demo_po_review_ui.csv"
 SCOOTSY_NAME = "Scootsy Logistics Private Limited"
 
 REAL_HEADER = [
@@ -71,6 +72,14 @@ def write_csv(rows, fieldnames=REAL_HEADER):
         writer.writerow(r)
     f.close()
     return f.name
+
+
+def expanded_fixture_path():
+    """Keep the real demo lines and add five POs for bulk UI assertions."""
+    with FIXTURE_PATH.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    rows.extend(row(PoNumber=f"SYN-PO-UI-{n:02d}") for n in range(2, 7))
+    return write_csv(rows)
 
 
 def upload_csv(client, path, filename=None):
@@ -131,9 +140,10 @@ def _run_checks():
     failures = []
     created_batch_ids = []
 
-    if not REAL_CSV_PATH.exists():
-        print(f"FATAL: real CSV not found at {REAL_CSV_PATH} -- stopping rather than fabricating a result.")
+    if not FIXTURE_PATH.exists():
+        print(f"FATAL: synthetic fixture not found at {FIXTURE_PATH}.")
         return False
+    review_fixture = expanded_fixture_path()
 
     official_before = {
         t: table_count(conn, t) for t in ("purchase_orders", "po_line_items", "inventory_movements", "grn_receipts")
@@ -142,7 +152,7 @@ def _run_checks():
     # -----------------------------------------------------------------
     # Upload (route-driven, real commits -- cleaned up explicitly below)
     # -----------------------------------------------------------------
-    resp = upload_csv(client, REAL_CSV_PATH)
+    resp = upload_csv(client, review_fixture, filename=REVIEW_FIXTURE_NAME)
     if resp.status_code != 302:
         failures.append(f"  upload 1: expected a redirect after successful upload, got {resp.status_code}")
     batch_id = batch_id_from_redirect(resp)
@@ -155,17 +165,17 @@ def _run_checks():
             conn, "staged_po_lines",
             "staged_po_id IN (SELECT staged_po_id FROM staged_purchase_orders WHERE batch_id = ?)", (batch_id,),
         )
-        if n_pos != 12:
-            failures.append(f"  upload 2: expected 12 staged POs, got {n_pos}")
-        if n_lines != 51:
-            failures.append(f"  upload 2: expected 51 staged lines, got {n_lines}")
+        if n_pos != 6:
+            failures.append(f"  upload 2: expected 6 staged POs, got {n_pos}")
+        if n_lines != 7:
+            failures.append(f"  upload 2: expected 7 staged lines, got {n_lines}")
 
     # 3. Re-upload identical file -> reuses existing batch
-    resp2 = upload_csv(client, REAL_CSV_PATH)
+    resp2 = upload_csv(client, review_fixture, filename=REVIEW_FIXTURE_NAME)
     batch_id2 = batch_id_from_redirect(resp2)
     if batch_id2 != batch_id:
         failures.append(f"  upload 3: re-upload should reuse batch {batch_id}, got {batch_id2}")
-    if table_count(conn, "po_import_batches", "customer_id = (SELECT id FROM customers WHERE name = ?) AND source_filename = ?", (SCOOTSY_NAME, "PO_0000000000001.csv")) != 1:
+    if table_count(conn, "po_import_batches", "customer_id = (SELECT id FROM customers WHERE name = ?) AND source_filename = ?", (SCOOTSY_NAME, REVIEW_FIXTURE_NAME)) != 1:
         failures.append("  upload 3: re-upload created a second batch instead of reusing the existing one")
 
     # 4. Fatal invalid CSV (mixed entities) leaves no partial data
@@ -196,17 +206,17 @@ def _run_checks():
         if resp.status_code != 200:
             failures.append(f"  review 6: batch page returned {resp.status_code}, expected 200")
         body = resp.get_data(as_text=True)
-        if "GGNPO385985" not in body:
-            failures.append("  review 7: batch page did not show a known staged PO (GGNPO385985)")
+        if "SYN-PO-1001" not in body:
+            failures.append("  review 7: batch page did not show SYN-PO-1001")
 
         summary = staging.batch_summary(conn, batch_id)
-        if summary["orders"] != 12 or summary["lines"] != 51:
-            failures.append(f"  review 8: expected 12 orders / 51 lines, got {summary}")
-        if summary["needs_source"] != 12 or summary["ready"] != 0 or summary["blocked"] != 0:
+        if summary["orders"] != 6 or summary["lines"] != 7:
+            failures.append(f"  review 8: expected 6 orders / 7 lines, got {summary}")
+        if summary["needs_source"] != 6 or summary["ready"] != 0 or summary["blocked"] != 0:
             failures.append(f"  review 9: freshly staged valid POs should all be NEEDS SOURCE, got {summary}")
 
         detail_resp = client.get(f"/po-import/{batch_id}/po/" + str(
-            conn.execute("SELECT staged_po_id FROM staged_purchase_orders WHERE batch_id = ? AND external_po_number = ?", (batch_id, "GGNPO385985")).fetchone()["staged_po_id"]
+            conn.execute("SELECT staged_po_id FROM staged_purchase_orders WHERE batch_id = ? AND external_po_number = ?", (batch_id, "SYN-PO-1001")).fetchone()["staged_po_id"]
         ))
         detail_body = detail_resp.get_data(as_text=True)
         if "Customer destination" not in detail_body or "Drizzl source warehouse" not in detail_body:
@@ -346,10 +356,10 @@ def _run_checks():
             failures.append("  detail 25: blocked line has no validation_errors to display")
 
         # A valid, resolved line to check master product name + barcode are exposed
-        real_result = staging.stage_po_csv(conn, str(REAL_CSV_PATH), filename="verify_detail_check.csv")
-        real_po = staging.list_staged_pos(conn, real_result["batch_id"])[0]
-        real_detail = staging.get_staged_po(conn, real_po["staged_po_id"])
-        if not any(l["master_product_name"] and l["master_barcode"] for l in real_detail["lines"]):
+        fixture_result = staging.stage_po_csv(conn, str(FIXTURE_PATH), filename="verify_detail_check.csv")
+        fixture_po = staging.list_staged_pos(conn, fixture_result["batch_id"])[0]
+        fixture_detail = staging.get_staged_po(conn, fixture_po["staged_po_id"])
+        if not any(l["master_product_name"] and l["master_barcode"] for l in fixture_detail["lines"]):
             failures.append("  detail 23/24: master product name/barcode not exposed on staged lines")
     finally:
         conn.execute("ROLLBACK TO SAVEPOINT status_and_detail_checks")

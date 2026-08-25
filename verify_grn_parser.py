@@ -7,22 +7,22 @@ from grn_parser import parse_grn_pdf
 EXPECTED = {
     "grn_number": "DEMO000001",
     "grn_date": "2026-08-07",
-    "po_number": "MBLPO426246",
+    "po_number": "SYN-PO-PDF-1002",
     "po_date": "2026-07-28",
-    "inbound_no": "MBL000551544",
+    "inbound_no": "SYN-INBOUND-1002",
     "create_date": "2026-08-07",
-    "invoice_no": "GTA/00120/26-27",
+    "invoice_no": "SYN-INV-PDF-1002",
     "invoice_date": "2026-07-28",
     "vendor_name": "DRIZZL DEMO VENDOR",
     "facility_name": "ECOM EXPRESS LIMITED",
 }
 
 EXPECTED_ITEMS = [
-    {"sku_code": "DEMO-SKU-001", "lot_no": "MBL002770472", "expected_qty": 144.0, "received_qty": 144.0, "total": 12096.0},
-    {"sku_code": "DEMO-SKU-003", "lot_no": "MBL002770477", "expected_qty": 72.0, "received_qty": 72.0, "total": 6048.0},
-    {"sku_code": "DEMO-SKU-005", "lot_no": "MBL002770482", "expected_qty": 216.0, "received_qty": 216.0, "total": 18144.0},
-    {"sku_code": "DEMO-SKU-002", "lot_no": "MBL002770487", "expected_qty": 48.0, "received_qty": 48.0, "total": 4032.0},
-    {"sku_code": "DEMO-SKU-006", "lot_no": "MBL002770496", "expected_qty": 24.0, "received_qty": 24.0, "total": 1512.0},
+    {"sku_code": "DEMO-SKU-001", "lot_no": "SYN-LOT-1001", "expected_qty": 144.0, "received_qty": 144.0, "total": 12096.0},
+    {"sku_code": "DEMO-SKU-003", "lot_no": "SYN-LOT-1002", "expected_qty": 72.0, "received_qty": 72.0, "total": 6048.0},
+    {"sku_code": "DEMO-SKU-005", "lot_no": "SYN-LOT-1003", "expected_qty": 216.0, "received_qty": 216.0, "total": 18144.0},
+    {"sku_code": "DEMO-SKU-002", "lot_no": "SYN-LOT-1004", "expected_qty": 48.0, "received_qty": 48.0, "total": 4032.0},
+    {"sku_code": "DEMO-SKU-006", "lot_no": "SYN-LOT-1005", "expected_qty": 24.0, "received_qty": 24.0, "total": 1512.0},
 ]
 
 
@@ -54,6 +54,8 @@ def run(path):
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "GRN_DEMO000001 (1).pdf"
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python verify_grn_parser.py <synthetic-grn.pdf>")
+    path = sys.argv[1]
     ok = run(path)
     sys.exit(0 if ok else 1)

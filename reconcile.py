@@ -1214,6 +1214,13 @@ def lookup_document(conn, query):
         return None
 
     po_number = (po["po_number"] if po else None) or (grn_direct["po_number"] if grn_direct else None)
+    # A direct GRN search still represents the same PO -> GRN document
+    # chain. Load its related PO so callers receive the complete chain,
+    # just as they do when searching by PO number.
+    if po is None and po_number:
+        po = conn.execute(
+            "SELECT * FROM purchase_orders WHERE po_number = ?", (po_number,)
+        ).fetchone()
 
     # Every grn_receipts ROW (grn_id) tied to this PO -- a correction
     # never changes po_number (a replacement is inserted with the exact

@@ -1,0 +1,3 @@
+PrNumber,PoNumber,GrnNumber,SkuCode,AcceptedQty,TotalRejectedQty,TotalRejectedAmount,CompletedDate,RejectedReasons
+SYN-PR-1002,SYN-PO-1002,SYN-GRN-1002,DEMO-SKU-003,26,4,200.00,2026-08-16,short delivery
+SYN-PR-1002,SYN-PO-1002,SYN-GRN-1002,DEMO-SKU-004,10,2,100.00,2026-08-16,short delivery

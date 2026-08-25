@@ -8,11 +8,9 @@ own logic -- each one is just run as a subprocess and its exit code is
 what decides pass/fail here.
 
 Deliberately excludes verify_po_parser.py / verify_grn_parser.py /
-verify_debit_note_parser.py -- those need real sample PDFs that live in
-the gitignored private_data/ folder, not this repo, so they're
-environment-dependent rather than something this command can reliably
-run everywhere. Run them manually (with the samples present) after
-touching a parser; see PROJECT_HANDOFF.md.
+verify_debit_note_parser.py because the public repository contains no PDF
+fixtures. Run them manually with caller-supplied synthetic PDFs after touching
+a parser.
 
 Usage:
     ./.venv/bin/python verify_all.py
@@ -35,6 +33,7 @@ VERIFY_SUITES = [
     "verify_grn_csv_staging.py",
     "verify_grn_review_ui.py",
     "verify_grn_posting.py",
+    "verify_synthetic_fixture_workflow.py",
     "verify_official_discrepancies.py",
     "verify_grn_correction.py",
     "verify_security.py",
@@ -82,8 +81,8 @@ def main():
     print(f"ALL {len(results)} SUITES PASSED.")
     print(
         "\nNote: verify_po_parser.py / verify_grn_parser.py / verify_debit_note_parser.py "
-        "are not included above -- they need real sample PDFs from the gitignored private_data/ "
-        "folder. Run them manually after touching a parser."
+        "are not included above -- run them manually with caller-supplied synthetic PDFs "
+        "after touching a parser."
     )
     sys.exit(0)
 

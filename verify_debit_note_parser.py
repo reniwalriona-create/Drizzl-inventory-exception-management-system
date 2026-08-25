@@ -1,18 +1,15 @@
-"""
-Verifies debit_note_parser.py against the known correct values from the
-source PDF (DEMO-DN-1001), read manually. Run after any change to the parser.
-"""
+"""Verifies debit_note_parser.py against a caller-supplied synthetic PDF."""
 from debit_note_parser import parse_debit_note_pdf
 
 EXPECTED = {
-    "note_number": "DEMO-DN-1001",
-    "reference_number": "CPD000305207",
+    "note_number": "SYN-DN-PDF-1001",
+    "reference_number": "SYN-REF-PDF-1001",
     "discrepancy_type": "QDN",
     "note_date": "2026-07-11",
     "sub_total": 1080.0,
     "total_amount": 1512.0,
-    "po_number": "CPDPO285283",
-    "invoice_number": "GTA/0080/26-27",
+    "po_number": "SYN-PO-PDF-1001",
+    "invoice_number": "SYN-INV-PDF-1001",
 }
 
 EXPECTED_ITEMS = [
@@ -48,6 +45,8 @@ def run(path):
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "demo_debit_note.pdf"
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python verify_debit_note_parser.py <synthetic-debit-note.pdf>")
+    path = sys.argv[1]
     ok = run(path)
     sys.exit(0 if ok else 1)

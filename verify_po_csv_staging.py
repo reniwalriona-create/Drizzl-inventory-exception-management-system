@@ -1,13 +1,11 @@
 """
 Verifies the Phase 3 PO CSV staging infrastructure against a disposable
-PostgreSQL database. Uses the real Scootsy
-PO export (PO_0000000000001.csv) for the primary checks, plus synthetic
-CSV fixtures (written to the scratchpad dir) for the controlled edge-case
+PostgreSQL database. Uses the repository's public synthetic demo PO for the
+primary checks, plus generated synthetic CSVs for the controlled edge-case
 tests. All database writes happen inside SAVEPOINTs and are rolled back --
 nothing persists after this script runs.
 
-If the real CSV isn't found, this script fails loudly rather than
-pretending the real-file checks passed.
+The suite never reads a fixture outside this repository.
 """
 import csv
 import json
@@ -24,7 +22,7 @@ from verify_db import bootstrap_connection, create_database, drop_database
 
 TEST_DB_NAME = "drizzl_inventory_test_po_staging"
 
-REAL_CSV_PATH = Path("/Users/demo/Desktop/Swiggy test PO GRN data/last 7 po csv/PO_0000000000001.csv")
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "demo_po_01.csv"
 SCOOTSY_NAME = "Scootsy Logistics Private Limited"
 
 REAL_HEADER = [
@@ -82,9 +80,9 @@ def table_count(conn, table, where=None, params=()):
 # Real-file checks
 # ---------------------------------------------------------------------------
 
-def check_real_file(conn, failures):
-    if not REAL_CSV_PATH.exists():
-        failures.append(f"  FATAL: real CSV not found at {REAL_CSV_PATH} -- cannot verify real-file checks, stopping rather than fabricating a result.")
+def check_fixture_file(conn, failures):
+    if not FIXTURE_PATH.exists():
+        failures.append(f"  FATAL: synthetic fixture not found at {FIXTURE_PATH}")
         return None
 
     official_po_before = table_count(conn, "purchase_orders")
@@ -94,7 +92,7 @@ def check_real_file(conn, failures):
 
     conn.execute("SAVEPOINT real_file_check")
     try:
-        result = staging.stage_po_csv(conn, str(REAL_CSV_PATH))
+        result = staging.stage_po_csv(conn, str(FIXTURE_PATH))
         batch_id = result["batch_id"]
 
         n_rows = table_count(conn, "po_import_rows", "batch_id = ?", (batch_id,))
@@ -109,14 +107,14 @@ def check_real_file(conn, failures):
             (batch_id,),
         ).fetchone()["n"]
 
-        if n_rows != 51:
-            failures.append(f"  expected 51 raw rows, got {n_rows}")
-        if n_pos != 12:
-            failures.append(f"  expected 12 staged POs, got {n_pos}")
-        if n_lines != 51:
-            failures.append(f"  expected 51 staged lines, got {n_lines}")
-        if n_with_product != 51:
-            failures.append(f"  expected 51/51 staged lines to resolve a product_id, got {n_with_product}")
+        if n_rows != 2:
+            failures.append(f"  expected 2 raw rows, got {n_rows}")
+        if n_pos != 1:
+            failures.append(f"  expected 1 staged PO, got {n_pos}")
+        if n_lines != 2:
+            failures.append(f"  expected 2 staged lines, got {n_lines}")
+        if n_with_product != 2:
+            failures.append(f"  expected 2/2 staged lines to resolve a product_id, got {n_with_product}")
 
         # 1. non-null source_location_id check (must ALL be NULL)
         non_null_source = table_count(conn, "staged_purchase_orders", "batch_id = ? AND source_location_id IS NOT NULL", (batch_id,))
@@ -127,13 +125,13 @@ def check_real_file(conn, failures):
         sample = conn.execute(
             "SELECT destination_facility_id, destination_facility_name, destination_city, source_location_id "
             "FROM staged_purchase_orders WHERE batch_id = ? AND external_po_number = ?",
-            (batch_id, "CI3PO84875"),
+            (batch_id, "SYN-PO-1001"),
         ).fetchone()
         if sample is None:
-            failures.append("  could not find staged PO CI3PO84875 to check destination-field preservation")
+            failures.append("  could not find SYN-PO-1001 to check destination-field preservation")
         else:
-            if sample["destination_facility_id"] != "CI3" or sample["destination_facility_name"] != "DEMO FACILITY A" or sample["destination_city"] != "MUMBAI":
-                failures.append(f"  destination fields for CI3PO84875 didn't match the source CSV: {dict(sample)}")
+            if sample["destination_facility_id"] != "SYN-FC-01" or sample["destination_facility_name"] != "Synthetic Test Facility" or sample["destination_city"] != "DEMO CITY":
+                failures.append(f"  destination fields for SYN-PO-1001 didn't match the fixture: {dict(sample)}")
             if sample["source_location_id"] is not None:
                 failures.append("  destination facility appears to have leaked into source_location_id")
 
@@ -149,44 +147,44 @@ def check_real_file(conn, failures):
         if table_count(conn, "products") != legacy_products_before:
             failures.append("  legacy products table row count changed -- staging must never call _ensure_product()")
 
-        # 8. GGNPO385985 -> exactly one staged PO, 5 lines
-        ggnpo = conn.execute(
+        # 8. Two rows sharing the same number normalize to one PO.
+        grouped = conn.execute(
             "SELECT staged_po_id FROM staged_purchase_orders WHERE batch_id = ? AND external_po_number = ?",
-            (batch_id, "GGNPO385985"),
+            (batch_id, "SYN-PO-1001"),
         ).fetchall()
-        if len(ggnpo) != 1:
-            failures.append(f"  expected exactly 1 staged PO for GGNPO385985, got {len(ggnpo)}")
+        if len(grouped) != 1:
+            failures.append(f"  expected exactly 1 staged PO for SYN-PO-1001, got {len(grouped)}")
         else:
-            ggn_lines = table_count(conn, "staged_po_lines", "staged_po_id = ?", (ggnpo[0]["staged_po_id"],))
-            if ggn_lines != 5:
-                failures.append(f"  expected 5 staged lines for GGNPO385985, got {ggn_lines}")
+            grouped_lines = table_count(conn, "staged_po_lines", "staged_po_id = ?", (grouped[0]["staged_po_id"],))
+            if grouped_lines != 2:
+                failures.append(f"  expected 2 staged lines for SYN-PO-1001, got {grouped_lines}")
 
         # 7. raw row preserves original CSV values in JSONB
         # (source_row_number=1 is the file's first data row -- PoNumber
-        # ETPPO84440, SkuCode DEMO-SKU-001; row 2 of the CSV including header)
+        # SYN-PO-1001, SkuCode DEMO-SKU-001; row 2 including the header)
         raw = conn.execute(
             "SELECT raw_data FROM po_import_rows WHERE batch_id = ? AND source_row_number = 1", (batch_id,)
         ).fetchone()
-        if raw is None or raw["raw_data"].get("PoNumber") != "ETPPO84440" or raw["raw_data"].get("SkuCode") != "DEMO-SKU-001":
+        if raw is None or raw["raw_data"].get("PoNumber") != "SYN-PO-1001" or raw["raw_data"].get("SkuCode") != "DEMO-SKU-001":
             failures.append(f"  raw_data for source row 2 didn't preserve the original CSV values: {raw['raw_data'] if raw else None}")
 
         # 10. SKU DEMO-SKU-001 -> barcode 9000000000001
-        lineDEMO-SKU-001 = conn.execute(
+        line_sku_001 = conn.execute(
             "SELECT mp.barcode FROM staged_po_lines l JOIN staged_purchase_orders p ON p.staged_po_id = l.staged_po_id "
             "JOIN master_products mp ON mp.product_id = l.product_id "
             "WHERE p.batch_id = ? AND l.external_sku = ? LIMIT 1",
             (batch_id, "DEMO-SKU-001"),
         ).fetchone()
-        if lineDEMO-SKU-001 is None or lineDEMO-SKU-001["barcode"] != "9000000000001":
-            failures.append(f"  SKU DEMO-SKU-001 did not resolve to barcode 9000000000001, got {dict(lineDEMO-SKU-001) if lineDEMO-SKU-001 else None}")
+        if line_sku_001 is None or line_sku_001["barcode"] != "9000000000001":
+            failures.append(f"  SKU DEMO-SKU-001 did not resolve to barcode 9000000000001, got {dict(line_sku_001) if line_sku_001 else None}")
 
         # 11. actual customer SKU preserved verbatim on the staged line
         preserved = conn.execute(
             "SELECT external_sku FROM staged_po_lines l JOIN staged_purchase_orders p ON p.staged_po_id = l.staged_po_id "
-            "WHERE p.batch_id = ? AND l.external_sku = ?", (batch_id, "DEMO-SKU-006"),
+            "WHERE p.batch_id = ? AND l.external_sku = ?", (batch_id, "DEMO-SKU-002"),
         ).fetchone()
         if preserved is None:
-            failures.append("  external_sku DEMO-SKU-006 was not preserved verbatim on any staged line")
+            failures.append("  external_sku DEMO-SKU-002 was not preserved verbatim on any staged line")
 
         # 6. re-staging the identical file is idempotent
         rows_before_reimport = table_count(conn, "po_import_rows")
@@ -194,7 +192,7 @@ def check_real_file(conn, failures):
         lines_before_reimport = table_count(conn, "staged_po_lines")
         batches_before_reimport = table_count(conn, "po_import_batches")
 
-        result2 = staging.stage_po_csv(conn, str(REAL_CSV_PATH))
+        result2 = staging.stage_po_csv(conn, str(FIXTURE_PATH))
         if not result2["reused_existing_batch"] or result2["batch_id"] != batch_id:
             failures.append(f"  re-staging the identical file did not reuse the existing batch: {result2}")
         if table_count(conn, "po_import_rows") != rows_before_reimport:
@@ -411,7 +409,7 @@ def run():
             print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
             return False
 
-        check_real_file(conn, failures)
+        check_fixture_file(conn, failures)
         check_unknown_sku(conn, failures)
         check_malformed_quantity(conn, failures)
         check_inconsistent_po_metadata(conn, failures)
@@ -433,9 +431,9 @@ def run():
         print("\n".join(failures))
     else:
         print(
-            "PASSED -- real file (51 rows / 12 staged POs / 51 staged lines / 51 resolved products) checks out, "
+            "PASSED -- public fixture (2 rows / 1 staged PO / 2 resolved product lines) checks out, "
             "all source_location_id values NULL, destination fields preserved separately, official ledger "
-            "(purchase_orders/po_line_items/inventory_movements/legacy products) untouched, GGNPO385985 grouped "
+            "(purchase_orders/po_line_items/inventory_movements/legacy products) untouched, SYN-PO-1001 grouped "
             "correctly, raw JSONB preserved, SKU->barcode resolution correct, re-staging is idempotent, and all "
             "6 controlled edge cases (unknown SKU, malformed quantity, inconsistent PO metadata, mixed-entity "
             "fatal rejection, extra column, missing optional column) behave exactly as specified. No test data "

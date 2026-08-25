@@ -252,7 +252,7 @@
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}">Dashboard</a>
       <a href="{{ url_for('visualizations') }}" class="{{ 'active' if request.endpoint == 'visualizations' }}">Visualizations</a>
       <a href="{{ url_for('debits_losses') }}" class="{{ 'active' if request.endpoint == 'debits_losses' }}">Debits &amp; Losses</a>
-      <a href="{{ url_for('imports_hub') }}" class="{{ 'active' if request.endpoint == 'imports_hub' or request.endpoint.startswith('po_import') or request.endpoint.startswith('grn_import') or request.endpoint.startswith('discrepancy_import') or request.endpoint in ('staged_po_detail', 'staged_grn_detail') }}">Imports</a>
+      <a href="{{ url_for('imports_hub') }}" class="{{ 'active' if request.endpoint == 'imports_hub' or (request.endpoint and (request.endpoint.startswith('po_import') or request.endpoint.startswith('grn_import') or request.endpoint.startswith('discrepancy_import'))) or request.endpoint in ('staged_po_detail', 'staged_grn_detail') }}">Imports</a>
       <a href="{{ url_for('po_grn_tracker') }}" class="{{ 'active' if request.endpoint == 'po_grn_tracker' }}">PO–GRN Tracker</a>
       <a href="{{ url_for('new_movement') }}" class="{{ 'active' if request.endpoint == 'new_movement' }}">Log movement</a>
       <a href="{{ url_for('lookup') }}" class="{{ 'active' if request.endpoint == 'lookup' }}">Look up PO/GRN</a>

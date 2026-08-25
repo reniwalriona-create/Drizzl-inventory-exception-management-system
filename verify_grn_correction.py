@@ -43,7 +43,7 @@ GRN_HEADER = [
 GRN_BASE_ROW = {
     "GrnNumber": "SYNGRN0001", "PurchaseOrderNumber": "SYNPO0001", "FacilityName": "DEMO FACILITY B",
     "SupplierCode": "DEMO-SUPPLIER-001", "VendorName": "DRIZZL DEMO VENDOR",
-    "InvoiceNumber": "GTA/999/26-27", "InvoiceDate": "2026-07-31", "CreatedAtDate": "2026-08-13 17:25:12",
+    "InvoiceNumber": "SYN-INV-CORRECTION", "InvoiceDate": "2026-07-31", "CreatedAtDate": "2026-08-13 17:25:12",
     "DnNumber": "", "DNQuantity": "0", "DNValue": "0.00", "SkuCode": "DEMO-SKU-001",
     "SkuDescription": "Drizzl Passionfruit | Probiotic Soda | 250 ml", "BrandName": "DRIZZL",
     "Category": "Packaged Food", "ReceivedQty": "10", "GrnLineValueWithoutTax": "600.00",

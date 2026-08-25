@@ -42,8 +42,32 @@
   {% if charts.flavor_popularity.labels %}<div class="chart-wrap"><canvas id="flavorPopularityChart"></canvas></div>{% else %}<p class="empty">No POs match this generated-date range.</p>{% endif %}
 </div>
 
+<div class="panel dashboard-filter compact-filter" id="discrepancy-visualization">
+  <h2 style="margin-top:0;">Discrepancy filters</h2>
+  <p class="filter-note">Discrepancy dates use the linked GRN business date.</p>
+  <form method="get" action="{{ url_for('visualizations') }}#discrepancy-visualization" class="row" style="align-items:flex-end;">
+    <div class="field"><label for="discrepancy_location">Source location</label><select name="discrepancy_location" id="discrepancy_location"><option value="">All locations</option>{% for l in all_locations %}<option value="{{ l.name }}" {{ "selected" if discrepancy_location == l.name }}>{{ l.name }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="discrepancy_product">Product</label><select name="discrepancy_product" id="discrepancy_product"><option value="">All master products</option>{% for p in all_products %}<option value="{{ p.product_id }}" {{ "selected" if discrepancy_product_id == p.product_id }}>{{ p.product_name|product_label }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="discrepancy_period">GRN date range</label><select name="discrepancy_period" id="discrepancy_period"><option value="all" {{ "selected" if discrepancy_period == "all" }}>All time</option><option value="7d" {{ "selected" if discrepancy_period == "7d" }}>Last 7 days</option><option value="15d" {{ "selected" if discrepancy_period == "15d" }}>Last 15 days</option><option value="30d" {{ "selected" if discrepancy_period == "30d" }}>Last 30 days</option><option value="custom" {{ "selected" if discrepancy_period == "custom" }}>Custom dates</option></select></div>
+    <div class="field"><label for="discrepancy_date_from">From</label><input type="date" name="discrepancy_date_from" id="discrepancy_date_from" value="{{ discrepancy_date_from or '' }}"></div>
+    <div class="field"><label for="discrepancy_date_to">To</label><input type="date" name="discrepancy_date_to" id="discrepancy_date_to" value="{{ discrepancy_date_to or '' }}"></div>
+    <div class="field" style="flex:0;"><button type="submit">Apply</button></div>
+    {% if discrepancy_location or discrepancy_product_id or discrepancy_period != "all" %}<div class="field" style="flex:0;"><a href="{{ url_for('visualizations') }}#discrepancy-visualization">Clear</a></div>{% endif %}
+  </form>
+</div>
+
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Discrepancy units over time</h2></div>
+  {% if charts.damage_trend.labels %}<div class="chart-wrap"><canvas id="damageTrendChart"></canvas></div>{% else %}<p class="empty">No discrepancies match these filters.</p>{% endif %}
+</div>
+
+<div class="panel table-panel">
+  <div class="table-panel-header"><h2>Discrepancy units by cause</h2></div>
+  {% if charts.damage_cause.labels %}<div class="chart-wrap"><canvas id="damageCauseChart"></canvas></div>{% else %}<p class="empty">No classified causes match these filters.</p>{% endif %}
+</div>
+
 <script>
-  [["po_date_from", "po_date_to", "po_period"]].forEach(function (ids) {
+  [["po_date_from", "po_date_to", "po_period"], ["discrepancy_date_from", "discrepancy_date_to", "discrepancy_period"]].forEach(function (ids) {
     ids.slice(0, 2).forEach(function (dateId) {
       document.getElementById(dateId).addEventListener("change", function () {
         document.getElementById(ids[2]).value = "custom";
