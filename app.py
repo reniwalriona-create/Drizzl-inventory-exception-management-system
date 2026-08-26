@@ -411,7 +411,7 @@ def dashboard():
         fulfillment_rows = reconcile.po_grn_fulfillment(conn)
         po_counts = {
             "total": sum(r["fulfillment_status"] != "voided" for r in fulfillment_rows),
-            "fulfilled": sum(r["fulfillment_status"] in {"grn_posted", "grn_posted_discrepancy"} for r in fulfillment_rows),
+            "fulfilled": sum(r["fulfillment_status"] in {"grn_posted", "needs_discrepancy", "grn_posted_discrepancy"} for r in fulfillment_rows),
             "awaiting": sum(r["fulfillment_status"] == "awaiting_grn" for r in fulfillment_rows),
         }
 
@@ -597,20 +597,13 @@ def po_grn_tracker():
         all_rows = reconcile.po_grn_fulfillment(
             conn, date_from=tracker_date_from, date_to=tracker_date_to
         )
-        needs_discrepancy_pos = {
-            row["po_number"] for row in reconcile.po_grn_pairs_needing_discrepancy_notes(conn)
-        }
-        counts = {
-            key: (
-                sum(r["po_number"] in needs_discrepancy_pos for r in all_rows)
-                if key == "needs_discrepancy"
-                else sum(r["fulfillment_status"] == key for r in all_rows)
-            )
-            for key in allowed
-        }
-        if selected_status == "needs_discrepancy":
-            rows = [r for r in all_rows if r["po_number"] in needs_discrepancy_pos]
-        elif selected_status:
+        counts = {key: sum(r["fulfillment_status"] == key for r in all_rows) for key in allowed}
+        counts["fulfilled"] = sum(
+            r["fulfillment_status"] in {"grn_posted", "needs_discrepancy", "grn_posted_discrepancy"}
+            for r in all_rows
+        )
+        counts["discrepancy_attached"] = counts["grn_posted_discrepancy"]
+        if selected_status:
             rows = [r for r in all_rows if r["fulfillment_status"] == selected_status]
         else:
             rows = all_rows
@@ -1028,9 +1021,9 @@ def void_grn_route(grn_number):
         if not reason:
             raise ValueError("Voiding needs a reason.")
         void_grn(conn, grn_number, reason)
-        log_activity(conn, "grn_voided", f"Voided GRN {grn_number} (and its sale movement(s)): {reason}", "grn", grn_number)
+        log_activity(conn, "grn_voided", f"Voided GRN {grn_number}; its movements and discrepancy reporting are inactive: {reason}", "grn", grn_number)
         conn.commit()
-        flash(f"GRN {grn_number} voided, along with the sale movement(s) it created. Restore it from the dashboard's Voided entries panel if this was a mistake.", "warning")
+        flash(f"GRN {grn_number} voided. Its movements and attached discrepancy reporting are inactive but retained for audit. Restore this GRN to reactivate them.", "warning")
     except ValueError as e:
         conn.rollback()
         flash(str(e), "error")
@@ -1049,7 +1042,7 @@ def restore_grn_route(grn_id):
         row = conn.execute("SELECT grn_number FROM grn_receipts WHERE grn_id = ?", (grn_id,)).fetchone()
         grn_number = row["grn_number"] if row else None
         unvoid_grn(conn, grn_id)
-        log_activity(conn, "grn_restored", f"Restored GRN {grn_number} (grn_id {grn_id}) (and its sale movement(s))", "grn", grn_number)
+        log_activity(conn, "grn_restored", f"Restored GRN {grn_number} (grn_id {grn_id}); its movements and attached discrepancy reporting are active", "grn", grn_number)
         conn.commit()
         flash(f"GRN {grn_number} restored.", "success")
     except ValueError as e:

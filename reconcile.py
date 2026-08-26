@@ -581,21 +581,22 @@ def discrepancy_debit_summary(conn, date_from=None, date_to=None):
     dashboard reporting.
     """
     query = """
-        SELECT COALESCE(SUM(rejected_amount), 0) AS total_debited,
-               COUNT(DISTINCT pr_number) AS discrepancy_notes,
-               COUNT(DISTINCT po_number) AS purchase_orders,
+        SELECT COALESCE(SUM(s.rejected_amount), 0) AS total_debited,
+               COUNT(DISTINCT s.pr_number) AS discrepancy_notes,
+               COUNT(DISTINCT s.po_number) AS purchase_orders,
                COUNT(*) AS discrepancy_lines
-        FROM staged_discrepancy_lines
-        WHERE classified_at IS NOT NULL
-          AND rejected_amount IS NOT NULL
-          AND completed_date IS NOT NULL
+        FROM staged_discrepancy_lines s
+        JOIN grn_receipts g ON g.grn_id=s.official_grn_id AND g.voided=0
+        WHERE s.classified_at IS NOT NULL
+          AND s.rejected_amount IS NOT NULL
+          AND s.completed_date IS NOT NULL
     """
     params = []
     if date_from:
-        query += " AND completed_date >= ?::date"
+        query += " AND s.completed_date >= ?::date"
         params.append(date_from)
     if date_to:
-        query += " AND completed_date <= ?::date"
+        query += " AND s.completed_date <= ?::date"
         params.append(date_to)
     return conn.execute(query, params).fetchone()
 
@@ -1156,10 +1157,21 @@ def po_grn_fulfillment(conn, status=None, date_from=None, date_to=None):
         ).fetchone()
         discrepancies = official_po_grn_discrepancies(conn, po["po_number"]) if grn else []
         has_difference = any(float(d["computed_shortfall_qty"] or 0) != 0 for d in discrepancies)
+        note = conn.execute(
+            """SELECT COUNT(DISTINCT pr_number) AS note_count,
+                      STRING_AGG(DISTINCT pr_number, ', ' ORDER BY pr_number) AS pr_numbers,
+                      COALESCE(SUM(rejected_amount), 0) AS debit_amount
+               FROM staged_discrepancy_lines
+               WHERE official_grn_id=? AND classified_at IS NOT NULL""",
+            (grn["grn_id"],),
+        ).fetchone() if grn else None
+        note_count = int(note["note_count"] or 0) if note else 0
         if po["voided"]:
             fulfillment_status = "voided"
         elif grn is None:
             fulfillment_status = "awaiting_grn"
+        elif has_difference and note_count == 0:
+            fulfillment_status = "needs_discrepancy"
         elif has_difference:
             fulfillment_status = "grn_posted_discrepancy"
         else:
@@ -1173,14 +1185,17 @@ def po_grn_fulfillment(conn, status=None, date_from=None, date_to=None):
             "grn_posted_at": grn["created_at"] if grn else None,
             "total_received_qty": grn["total_received_qty"] if grn else None,
             "total_discrepancy_qty": sum(d["computed_shortfall_qty"] for d in discrepancies) if discrepancies else None,
+            "discrepancy_note_count": note_count,
+            "discrepancy_pr_numbers": note["pr_numbers"] if note else None,
+            "discrepancy_debit_amount": note["debit_amount"] if note else None,
         })
         result.append(po)
     return result
 
 
 def lookup_document(conn, query):
-    """Given a PO number or GRN number, trace the whole chain -- PO ->
-    GRN(s) -- plus the ledger movements and ingestion flags tied to it,
+    """Given a PO, GRN, or discrepancy/PR number, trace the whole chain --
+    PO -> GRN(s) -> discrepancy -- plus the ledger movements and ingestion flags tied to it,
     and (Phase 9) the canonical PO-vs-GRN discrepancy comparison for the
     PO. Unlike the dashboard's location/SKU filters (which only narrow
     the live balance and the 25-row recent-movements list), this searches
@@ -1210,10 +1225,21 @@ def lookup_document(conn, query):
     grn_direct = next((g for g in grn_direct_candidates if not g["voided"]), None) or \
         (grn_direct_candidates[0] if grn_direct_candidates else None)
 
-    if not (po or grn_direct):
+    discrepancy_direct = [
+        dict(r) for r in conn.execute(
+            """SELECT DISTINCT s.official_grn_id,s.po_number
+               FROM staged_discrepancy_lines s
+               WHERE s.pr_number=? AND s.classified_at IS NOT NULL
+               ORDER BY s.official_grn_id""",
+            (query,),
+        ).fetchall()
+    ]
+
+    if not (po or grn_direct or discrepancy_direct):
         return None
 
-    po_number = (po["po_number"] if po else None) or (grn_direct["po_number"] if grn_direct else None)
+    po_number = (po["po_number"] if po else None) or (grn_direct["po_number"] if grn_direct else None) or \
+        (discrepancy_direct[0]["po_number"] if discrepancy_direct else None)
     # A direct GRN search still represents the same PO -> GRN document
     # chain. Load its related PO so callers receive the complete chain,
     # just as they do when searching by PO number.
@@ -1227,11 +1253,20 @@ def lookup_document(conn, query):
     # same one as what it supersedes), so this naturally captures the
     # WHOLE history chain, not just whichever row is currently active.
     grn_ids = {g["grn_id"] for g in grn_direct_candidates}
+    grn_ids.update(r["official_grn_id"] for r in discrepancy_direct if r["official_grn_id"] is not None)
     if po_number:
         for row in conn.execute("SELECT grn_id FROM grn_receipts WHERE po_number = ?", (po_number,)).fetchall():
             grn_ids.add(row["grn_id"])
 
-    result = {"query": query, "po": None, "grns": [], "flags": []}
+    result = {
+        "query": query,
+        "matched_document_type": (
+            "po" if po and po["po_number"] == query else
+            "grn" if grn_direct_candidates else
+            "discrepancy" if discrepancy_direct else None
+        ),
+        "po": None, "grns": [], "flags": [],
+    }
 
     if po:
         result["po"] = dict(po)
@@ -1294,6 +1329,7 @@ def lookup_document(conn, query):
         grn_dict["discrepancy_notes"] = []
         for note_row in note_rows:
             note = dict(note_row)
+            note["active"] = not bool(grn["voided"])
             note["lines"] = [
                 dict(r) for r in conn.execute(
                     """SELECT s.external_sku,s.rejected_qty,s.rejected_amount,

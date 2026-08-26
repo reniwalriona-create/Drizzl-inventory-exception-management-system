@@ -1,18 +1,19 @@
 {% extends "base.html" %}
-{% block title %}PO–GRN Tracker - Drizzl Inventory{% endblock %}
+{% block title %}PO–GRN–Discrepancy Tracker - Drizzl Inventory{% endblock %}
 {% block content %}
-<div class="page-header"><div><div class="eyebrow">Operations</div><h1>PO–GRN fulfillment</h1><p class="subtitle">See which official POs still need a GRN and which have closed with a quantity difference.</p></div></div>
+<div class="page-header"><div><div class="eyebrow">Operations</div><h1>PO–GRN–Discrepancy tracker</h1><p class="subtitle">Follow each official purchase order through receipt, shortfall review, and its classified discrepancy note.</p></div></div>
 
 <div class="metrics">
   <div class="metric"><span class="metric-label">All official POs</span><strong class="metric-value">{{ total_rows }}</strong></div>
   <div class="metric metric-warning"><span class="metric-label">Awaiting GRN</span><strong class="metric-value">{{ counts.awaiting_grn }}</strong></div>
-  <div class="metric metric-success"><span class="metric-label">GRN posted</span><strong class="metric-value">{{ counts.grn_posted }}</strong></div>
-  <div class="metric metric-error"><span class="metric-label">GRN + Discrepancy posted</span><strong class="metric-value">{{ counts.grn_posted_discrepancy }}</strong></div>
-  <div class="metric"><span class="metric-label">Voided</span><strong class="metric-value">{{ counts.voided }}</strong></div>
+  <div class="metric metric-success"><span class="metric-label">Fulfilled by GRN</span><strong class="metric-value">{{ counts.fulfilled }}</strong></div>
+  <div class="metric metric-warning"><span class="metric-label">Needs discrepancy note</span><strong class="metric-value">{{ counts.needs_discrepancy }}</strong></div>
+  <div class="metric metric-error"><span class="metric-label">Discrepancy note attached</span><strong class="metric-value">{{ counts.discrepancy_attached }}</strong></div>
+  <div class="metric"><span class="metric-label">Voided POs</span><strong class="metric-value">{{ counts.voided }}</strong></div>
 </div>
 
 <div class="panel toolbar">
-  <div class="toolbar-copy">A GRN closes the entire PO commitment. Quantity differences remain visible for later discrepancy review.</div>
+  <div class="toolbar-copy">Every active GRN counts as fulfilled. A short receipt stays in “Needs discrepancy” until a classified PR explains it.</div>
   <form method="get" action="#tracker-results" class="row" style="align-items:flex-end;">
     <div class="field" style="margin:0; max-width:280px;">
       <label for="status">Filter by fulfillment status</label>
@@ -20,8 +21,8 @@
         <option value="">All official POs ({{ total_rows }})</option>
         <option value="awaiting_grn" {{ "selected" if selected_status == "awaiting_grn" }}>Awaiting GRN ({{ counts.awaiting_grn }})</option>
         <option value="needs_discrepancy" {{ "selected" if selected_status == "needs_discrepancy" }}>Needs discrepancy ({{ counts.needs_discrepancy }})</option>
-        <option value="grn_posted" {{ "selected" if selected_status == "grn_posted" }}>GRN posted ({{ counts.grn_posted }})</option>
-        <option value="grn_posted_discrepancy" {{ "selected" if selected_status == "grn_posted_discrepancy" }}>GRN + Discrepancy posted ({{ counts.grn_posted_discrepancy }})</option>
+        <option value="grn_posted" {{ "selected" if selected_status == "grn_posted" }}>GRN posted — no shortfall ({{ counts.grn_posted }})</option>
+        <option value="grn_posted_discrepancy" {{ "selected" if selected_status == "grn_posted_discrepancy" }}>GRN + discrepancy posted ({{ counts.grn_posted_discrepancy }})</option>
         <option value="voided" {{ "selected" if selected_status == "voided" }}>Voided ({{ counts.voided }})</option>
       </select>
     </div>
@@ -47,16 +48,24 @@
   <div class="table-panel-header"><h2>{{ "Filtered official POs" if selected_status else "All official POs" }}</h2><span class="subtitle" style="margin:0;">{{ rows|length }} result{{ "s" if rows|length != 1 }}</span></div>
   {% if rows %}
   <div class="table-scroll"><table>
-    <tr><th>PO number</th><th>PO created</th><th>Destination</th><th>Drizzl source</th><th>Expected</th><th>GRN number</th><th>GRN posted</th><th></th></tr>
+    <tr><th>PO</th><th>PO created</th><th>Destination / source</th><th>Ordered</th><th>GRN</th><th>Received</th><th>Shortfall</th><th>Discrepancy note</th><th>Debit</th><th></th></tr>
     {% for row in rows %}
     <tr>
-      <td><a class="cell-primary" href="{{ url_for('lookup', q=row.po_number) }}">{{ row.po_number }}</a><div style="margin-top:4px;"><span class="badge badge-{{ row.fulfillment_status }}">{% if row.fulfillment_status == "grn_posted_discrepancy" %}GRN + DISCREPANCY POSTED{% else %}{{ row.fulfillment_status.replace("_", " ")|upper }}{% endif %}</span></div></td>
+      <td><a class="cell-primary" href="{{ url_for('lookup', q=row.po_number) }}">{{ row.po_number }}</a><div style="margin-top:4px;"><span class="badge badge-{{ row.fulfillment_status }}">{% if row.fulfillment_status == "grn_posted_discrepancy" %}GRN + DISCREPANCY POSTED{% elif row.fulfillment_status == "needs_discrepancy" %}GRN POSTED — NEEDS DISCREPANCY{% elif row.fulfillment_status == "grn_posted" %}GRN POSTED — COMPLETE{% else %}{{ row.fulfillment_status.replace("_", " ")|upper }}{% endif %}</span></div></td>
       <td>{{ row.external_po_created_at.strftime("%Y-%m-%d") if row.external_po_created_at else "—" }}</td>
-      <td>{{ row.destination_facility_name or row.facility_name or "—" }}</td>
-      <td>{{ row.source_location_name or "—" }}</td>
-      <td>{{ row.expected_delivery_date or "—" }}</td>
+      <td>{{ row.destination_facility_name or row.facility_name or "—" }}<div class="subtitle" style="margin:3px 0 0;">From {{ row.source_location_name or "unassigned" }}</div></td>
+      <td>{{ "%.0f"|format(row.total_ordered_qty or 0) }}</td>
       <td>{% if row.grn_number %}<a href="{{ url_for('lookup', q=row.grn_number) }}">{{ row.grn_number }}</a>{% else %}—{% endif %}</td>
-      <td>{{ row.grn_posted_at or "—" }}</td>
+      <td>{{ "%.0f"|format(row.total_received_qty) if row.total_received_qty is not none else "—" }}</td>
+      <td class="{{ 'neg' if row.total_discrepancy_qty and row.total_discrepancy_qty > 0 }}">{{ "%.0f"|format(row.total_discrepancy_qty) if row.total_discrepancy_qty is not none else "—" }}</td>
+      <td>
+        {% if row.discrepancy_pr_numbers %}
+          {% for pr in row.discrepancy_pr_numbers.split(', ') %}<a href="{{ url_for('lookup', q=pr) }}">{{ pr }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}
+        {% elif row.fulfillment_status == "needs_discrepancy" %}
+          <span class="badge badge-needs_discrepancy">NEEDED</span><div style="margin-top:5px;"><a href="{{ url_for('discrepancy_import') }}">Import note</a></div>
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ "₹{:,.2f}".format(row.discrepancy_debit_amount or 0) if row.discrepancy_note_count else "—" }}</td>
       <td><a href="{{ url_for('lookup', q=row.po_number) }}">View chain</a></td>
     </tr>
     {% endfor %}

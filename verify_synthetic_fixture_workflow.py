@@ -182,13 +182,41 @@ def run():
         tracker = {row["po_number"]: row for row in reconcile.po_grn_fulfillment(conn)}
         check(all(tracker[c["po"]]["fulfillment_status"] == "grn_posted_discrepancy" for c in CHAINS), "PO-GRN Tracker includes both completed discrepancy chains")
         for chain in CHAINS:
-            for query in (chain["po"], chain["grn"]):
+            for query in (chain["po"], chain["grn"], chain["pr"]):
                 lookup = reconcile.lookup_document(conn, query)
                 check(lookup and lookup["po"]["po_number"] == chain["po"] and lookup["grns"][0]["grn_number"] == chain["grn"], f"lookup connects {query} to its PO and GRN")
                 check(lookup["grns"][0]["discrepancy_notes"][0]["pr_number"] == chain["pr"], f"lookup connects {query} to {chain['pr']}")
+                if query == chain["pr"]:
+                    check(lookup["matched_document_type"] == "discrepancy", f"lookup recognizes {query} as a discrepancy note")
         activities = activity_log.recent_activity(conn, limit=50)
         references = {row["reference_id"] for row in activities}
         check(all(c[key] in references for c in CHAINS for key in ("po", "grn", "pr")), "Activity Log contains both synthetic import chains")
+
+        # A discrepancy belongs to its exact GRN. Voiding that GRN keeps the
+        # note for audit but excludes it from current reporting; restoring the
+        # same grn_id reactivates both the movements and the note automatically.
+        chain = CHAINS[0]
+        grn_row = one(conn, "SELECT grn_id FROM grn_receipts WHERE grn_number=? AND voided=0", (chain["grn"],))
+        ingest.void_grn(conn, chain["grn"], "synthetic lifecycle verification")
+        conn.commit()
+        voided_summary = reconcile.discrepancy_debit_summary(conn, "2026-08-01", "2026-08-25")
+        check(Decimal(str(voided_summary["total_debited"])) == Decimal("760.00"), "voided GRN removes its discrepancy debit from current reporting")
+        check(voided_summary["discrepancy_notes"] == 1 and voided_summary["discrepancy_lines"] == 6, "voided GRN removes its discrepancy note and lines from current counts")
+        voided_tracker = {row["po_number"]: row for row in reconcile.po_grn_fulfillment(conn)}
+        check(voided_tracker[chain["po"]]["fulfillment_status"] == "awaiting_grn", "voided GRN returns its PO to awaiting GRN")
+        historical = reconcile.lookup_document(conn, chain["pr"])
+        historical_note = next(g for g in historical["grns"] if g["grn_id"] == grn_row["grn_id"])["discrepancy_notes"][0]
+        check(not historical_note["active"], "voided GRN keeps its discrepancy visible as inactive history")
+
+        ingest.unvoid_grn(conn, grn_row["grn_id"])
+        conn.commit()
+        restored_summary = reconcile.discrepancy_debit_summary(conn, "2026-08-01", "2026-08-25")
+        check(Decimal(str(restored_summary["total_debited"])) == Decimal("1380.00"), "restoring the same GRN reactivates its discrepancy debit")
+        restored_tracker = {row["po_number"]: row for row in reconcile.po_grn_fulfillment(conn)}
+        check(restored_tracker[chain["po"]]["fulfillment_status"] == "grn_posted_discrepancy", "restored GRN returns to GRN + discrepancy posted")
+        restored = reconcile.lookup_document(conn, chain["pr"])
+        restored_note = next(g for g in restored["grns"] if g["grn_id"] == grn_row["grn_id"])["discrepancy_notes"][0]
+        check(restored_note["active"], "restoring the same GRN reactivates its attached discrepancy note")
         print("PASSED -- both public synthetic fixture chains completed end to end.")
         return True
     finally:

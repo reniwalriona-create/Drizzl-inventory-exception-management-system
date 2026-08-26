@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Look up document - Drizzl Inventory{% endblock %}
 {% block content %}
-<div class="page-header"><div><div class="eyebrow">Document trace</div><h1>Look up a PO or GRN</h1><p class="subtitle">Search one document number to trace its official PO, linked GRN, inventory movements, and review history.</p></div></div>
+<div class="page-header"><div><div class="eyebrow">Document trace</div><h1>Look up a PO, GRN, or discrepancy</h1><p class="subtitle">Search any PO, GRN, or PR number to trace the complete official document chain, inventory movements, and review history.</p></div></div>
 
 <div class="panel toolbar">
   <form method="get" class="row" style="align-items:flex-end;">
     <div class="field" style="min-width:320px; margin-bottom:0;">
-      <label for="q">PO / GRN number</label>
-      <input type="text" name="q" id="q" value="{{ query or '' }}" placeholder="e.g. CADPO219808 or JCE000177512" autofocus>
+      <label for="q">PO / GRN / Discrepancy (PR) number</label>
+      <input type="text" name="q" id="q" value="{{ query or '' }}" placeholder="e.g. SYN-PO-1001, SYN-GRN-1001, or SYN-PR-1001" autofocus>
     </div>
     <div class="field" style="flex:0;">
       <button type="submit">Look up</button>
@@ -17,11 +17,15 @@
 
 {% if query and not result %}
 <div class="panel callout-error">
-  <p class="empty">No PO or GRN found with number "{{ query }}".</p>
+  <p class="empty">No PO, GRN, or classified discrepancy found with number "{{ query }}".</p>
 </div>
 {% endif %}
 
 {% if result %}
+
+{% if result.matched_document_type == "discrepancy" %}
+<div class="flash flash-success">Found discrepancy note <strong>{{ query }}</strong>. Showing its complete PO → GRN → discrepancy chain.</div>
+{% endif %}
 
 {% if result.po %}
 <div class="panel table-panel">
@@ -156,7 +160,7 @@
       {% endif %}
     {% else %}
     <form method="post" action="{{ url_for('void_grn_route', grn_number=grn.grn_number) }}" class="row" style="align-items:flex-end;"
-          onsubmit="return confirm('Void GRN {{ grn.grn_number }}? This also voids the sale movement(s) it created -- everything stays visible here, just excluded from every calculation, and restorable anytime.');">
+          onsubmit="return confirm('Void GRN {{ grn.grn_number }}? Its sale/loss movements and attached discrepancy reporting become inactive. All records stay visible for audit and reactivate if this same GRN is restored.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field" style="margin-bottom:0;">
         <input type="text" name="reason" placeholder="Reason for voiding" required style="width:220px;">
@@ -218,9 +222,10 @@
     {% for note in grn.discrepancy_notes %}
     <div{% if not loop.last %} style="margin-bottom:18px; padding-bottom:18px; border-bottom:1px solid var(--border);"{% endif %}>
       <div class="row" style="justify-content:space-between; margin-bottom:10px;">
-        <strong>Discrepancy Note {{ note.pr_number }}</strong>
+        <strong>Discrepancy Note {{ note.pr_number }} {% if note.active %}<span class="badge badge-posted">ACTIVE</span>{% else %}<span class="badge badge-voided">INACTIVE — PARENT GRN VOIDED</span>{% endif %}</strong>
         <span><strong>₹{{ "{:,.2f}".format(note.rejected_amount or 0) }}</strong> Debited · {{ "%.0f"|format(note.rejected_qty or 0) }} Cans{% if note.completed_date %} · Completed {{ note.completed_date.strftime('%b %d, %Y') }}{% endif %}</span>
       </div>
+      {% if not note.active %}<p class="subtitle" style="margin:0 0 10px;">Historical only. This note is excluded from current dashboards and debit totals until this exact GRN is restored.</p>{% endif %}
       <table>
         <tr><th>Customer SKU</th><th>Master Product</th><th>Rejected Cans</th><th>Debit Amount</th><th>Cause</th></tr>
         {% for line in note.lines %}

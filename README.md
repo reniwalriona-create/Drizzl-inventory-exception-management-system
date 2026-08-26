@@ -147,7 +147,9 @@ A configured PostgreSQL database and an application user are required. The seede
 11. `demo_discrepancy_02.csv`
 12. Review and classify discrepancy 2.
 
-Afterward, the Dashboard shows 558 ordered units, 532 received units, and 26 classified shortfall units across five causes: damaged, expired, packaging damage, quality issue, and short delivery. **Debits & Losses** shows two discrepancy notes, twelve lines, and a total synthetic debit of 1,380.00. The two chains use different August 2026 dates so the time-based reports have more than one reporting point. The **PO–GRN Tracker** shows both POs with posted GRNs and discrepancies. The **Activity Log** shows each import/post/classification action, and PO/GRN lookup connects each PO to its GRN, discrepancy note, line items, and inventory movements.
+Afterward, the Dashboard shows 558 ordered units, 532 received units, and 26 classified shortfall units across five causes: damaged, expired, packaging damage, quality issue, and short delivery. **Debits & Losses** shows two discrepancy notes, twelve lines, and a total synthetic debit of 1,380.00. The two chains use different August 2026 dates so the time-based reports have more than one reporting point. The **PO–GRN–Discrepancy Tracker** shows both complete document chains. The **Activity Log** shows each import/post/classification action, and document lookup accepts a PO, GRN, or discrepancy/PR number to connect the entire chain, line items, and inventory movements.
+
+Voiding a GRN makes its attached discrepancy reporting inactive without deleting history. Current dashboards and debit totals exclude that note; lookup keeps it visible as historical. Restoring the same GRN reactivates the note automatically. A corrected replacement GRN does not inherit the old note because its received quantities may differ.
 
 The portable automated proof is:
 

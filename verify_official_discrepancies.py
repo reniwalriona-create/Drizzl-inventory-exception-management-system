@@ -304,7 +304,7 @@ def run():
 
         tracker = {r["po_number"]: r for r in reconcile.po_grn_fulfillment(conn)}
         ok &= check("fulfillment tracker marks exact receipt GRN POSTED", tracker["PO-EXACT"]["fulfillment_status"] == "grn_posted")
-        ok &= check("fulfillment tracker marks short receipt GRN POSTED DISCREPANCY", tracker["PO-SHORT"]["fulfillment_status"] == "grn_posted_discrepancy")
+        ok &= check("fulfillment tracker marks short receipt NEEDS DISCREPANCY until a note is classified", tracker["PO-SHORT"]["fulfillment_status"] == "needs_discrepancy")
         ok &= check("fulfillment tracker marks PO with no GRN AWAITING GRN", tracker["PO-NOGR"]["fulfillment_status"] == "awaiting_grn")
         awaiting = reconcile.po_grn_fulfillment(conn, status="awaiting_grn")
         ok &= check("fulfillment tracker status filter returns only awaiting POs", awaiting and all(r["fulfillment_status"] == "awaiting_grn" for r in awaiting))
