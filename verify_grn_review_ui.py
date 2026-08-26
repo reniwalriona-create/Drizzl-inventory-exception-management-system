@@ -270,8 +270,8 @@ def run():
 
         summary = staging.get_grn_batch_summary(conn, grn_batch_id)
         ok &= check("3 staged GRNs", summary["grns"] == 3, str(summary))
-        ok &= check("11 raw rows", summary["raw_rows"] == 11, str(summary))
-        ok &= check("10 normalized lines", summary["lines"] == 10, str(summary))
+        ok &= check("15 raw rows", summary["raw_rows"] == 15, str(summary))
+        ok &= check("14 normalized lines", summary["lines"] == 14, str(summary))
 
         # -----------------------------------------------------------------
         print("\n--- Upload: exact-file idempotency ---")
@@ -313,8 +313,8 @@ def run():
         ok &= check("shows READY TO POST", "READY TO POST" in body)
         ok &= check("links to official PO SYN-PO-1001", "SYN-PO-1001" in body)
         ok &= check("shows Drizzl source Drizzl Demo Warehouse", "Drizzl Demo Warehouse" in body)
-        ok &= check("shows 20 ordered and 18 received", "20" in body and "18" in body)
-        ok &= check("shows 10 ordered and 9 received", "10" in body and "9" in body)
+        ok &= check("shows 48 ordered and 46 received", "48" in body and "46" in body)
+        ok &= check("shows 36 ordered and 35 received", "36" in body and "35" in body)
         ok &= check("shows short master product name", "Passionfruit Probiotic Soda" in body)
         ok &= check("hides master barcode", "9000000000001" not in body)
 

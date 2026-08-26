@@ -130,7 +130,7 @@ One command, one PASS/FAIL summary — runs every business-logic and security ve
 
 ## Synthetic portfolio demo
 
-All data in `fixtures/synthetic/` is fictional, contains no production data, and is safe to use for a public portfolio demonstration. The six CSVs form two independent, complete PO → GRN → discrepancy chains. Both GRNs intentionally receive fewer units than ordered; their matching discrepancy files classify the resulting loss without deducting inventory a second time.
+All data in `fixtures/synthetic/` is fictional, contains no production data, and is safe to use for a public portfolio demonstration. The six CSVs form two independent, complete PO → GRN → discrepancy chains. Each file contains six product lines using the mapped synthetic SKUs `DEMO-SKU-001` through `DEMO-SKU-006`. Both GRNs intentionally receive fewer units than ordered; their matching discrepancy files classify the resulting loss without deducting inventory a second time.
 
 A configured PostgreSQL database and an application user are required. The seeded source warehouse **Drizzl Demo Warehouse** must exist. Upload the files in this order:
 
@@ -147,7 +147,7 @@ A configured PostgreSQL database and an application user are required. The seede
 11. `demo_discrepancy_02.csv`
 12. Review and classify discrepancy 2.
 
-Afterward, the Dashboard shows nine classified shortfall units across the two causes. **Debits & Losses** shows two discrepancy notes, four lines, and a total synthetic debit of 480.00. The **PO–GRN Tracker** shows both POs with posted GRNs and discrepancies. The **Activity Log** shows each import/post/classification action, and PO/GRN lookup connects each PO to its GRN, discrepancy note, line items, and inventory movements.
+Afterward, the Dashboard shows 558 ordered units, 532 received units, and 26 classified shortfall units across five causes: damaged, expired, packaging damage, quality issue, and short delivery. **Debits & Losses** shows two discrepancy notes, twelve lines, and a total synthetic debit of 1,380.00. The two chains use different August 2026 dates so the time-based reports have more than one reporting point. The **PO–GRN Tracker** shows both POs with posted GRNs and discrepancies. The **Activity Log** shows each import/post/classification action, and PO/GRN lookup connects each PO to its GRN, discrepancy note, line items, and inventory movements.
 
 The portable automated proof is:
 

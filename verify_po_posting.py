@@ -170,7 +170,7 @@ def run():
         batch_real = result["batch_id"]
         summary = staging.batch_summary(conn, batch_real)
         ok &= check("10 staged POs", summary["orders"] == 10, f"got {summary['orders']}")
-        ok &= check("11 staged lines", summary["lines"] == 11, f"got {summary['lines']}")
+        ok &= check("15 staged lines", summary["lines"] == 15, f"got {summary['lines']}")
         ok &= check("0 blocked (all SKUs resolve)", summary["blocked"] == 0, f"got {summary['blocked']}")
 
         pos = sorted(staging.list_staged_pos(conn, batch_real), key=lambda p: p["staged_po_id"])
@@ -178,7 +178,7 @@ def run():
             1 for p in pos for l in staging.get_staged_po(conn, p["staged_po_id"])["lines"]
             if l["product_id"] is not None
         )
-        ok &= check("11/11 product mappings resolved", resolved == 11, f"got {resolved}")
+        ok &= check("15/15 product mappings resolved", resolved == 15, f"got {resolved}")
 
         p0, p1, p2, p3, p4, p5, p6, p7, p8, p9 = pos[:10]
 

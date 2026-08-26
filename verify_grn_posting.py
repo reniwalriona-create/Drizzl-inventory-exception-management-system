@@ -232,8 +232,8 @@ def run():
         conn.commit()
         ok &= check("SYN-PO-1001 posted", len(post_result["posted"]) == 1)
 
-        opening_balance(conn, p_sku_001, bangalore_id, 100)
-        opening_balance(conn, p_sku_002, bangalore_id, 100)
+        for product_id in (p_sku_001, p_sku_002, p_sku_003, p_sku_004, p_sku_005, p_sku_006):
+            opening_balance(conn, product_id, bangalore_id, 100)
         conn.commit()
         ok &= check("Passionfruit opening = 100", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_001) == 100)
         ok &= check("Yuzu opening = 100", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_002) == 100)
@@ -248,7 +248,7 @@ def run():
 
         movements_before = table_count(conn, "inventory_movements")
         commitment_before = sum(r["qty"] for r in reconcile.committed_quantity(conn) if r["po_number"] == "SYN-PO-1001")
-        ok &= check("commitment before posting = 30", commitment_before == 30, str(commitment_before))
+        ok &= check("commitment before posting = 270", commitment_before == 270, str(commitment_before))
 
         # -----------------------------------------------------------------
         print("\n--- Post SYN-GRN-1001 ---")
@@ -268,20 +268,20 @@ def run():
             ok &= check("source = 'csv'", official_grn["source"] == "csv")
 
         official_lines = conn.execute("SELECT * FROM grn_line_items WHERE grn_number = 'SYN-GRN-1001'").fetchall()
-        ok &= check("2 official GRN lines", len(official_lines) == 2, str(len(official_lines)))
+        ok &= check("6 official GRN lines", len(official_lines) == 6, str(len(official_lines)))
         by_sku = {l["external_sku"]: l for l in official_lines}
-        ok &= check("DEMO-SKU-001 line: product_id + qty 18", by_sku.get("DEMO-SKU-001") and by_sku["DEMO-SKU-001"]["product_id"] == p_sku_001 and by_sku["DEMO-SKU-001"]["received_qty"] == 18)
-        ok &= check("DEMO-SKU-002 line: product_id + qty 9", by_sku.get("DEMO-SKU-002") and by_sku["DEMO-SKU-002"]["product_id"] == p_sku_002 and by_sku["DEMO-SKU-002"]["received_qty"] == 9)
+        ok &= check("DEMO-SKU-001 line: product_id + qty 46", by_sku.get("DEMO-SKU-001") and by_sku["DEMO-SKU-001"]["product_id"] == p_sku_001 and by_sku["DEMO-SKU-001"]["received_qty"] == 46)
+        ok &= check("DEMO-SKU-002 line: product_id + qty 35", by_sku.get("DEMO-SKU-002") and by_sku["DEMO-SKU-002"]["product_id"] == p_sku_002 and by_sku["DEMO-SKU-002"]["received_qty"] == 35)
         ok &= check("item_code mirrors external_sku (DEMO-SKU-001)", by_sku.get("DEMO-SKU-001") and by_sku["DEMO-SKU-001"]["sku_code"] == "DEMO-SKU-001")
 
         legacy_products_after = table_count(conn, "products")
         ok &= check("no legacy products row created", legacy_products_after == legacy_products_before, f"{legacy_products_before} -> {legacy_products_after}")
 
         movements = conn.execute("SELECT * FROM inventory_movements WHERE reference_type = 'grn' AND reference_id = 'SYN-GRN-1001'").fetchall()
-        ok &= check("2 canonical SALE movements", len(movements) == 2, str(len(movements)))
+        ok &= check("6 canonical SALE movements", len(movements) == 6, str(len(movements)))
         mv_by_product = {m["product_id"]: m for m in movements}
-        ok &= check("DEMO-SKU-001 movement qty=18, canonical barcode, source warehouse", mv_by_product.get(p_sku_001) and mv_by_product[p_sku_001]["quantity"] == 18 and mv_by_product[p_sku_001]["sku_code"] == "9000000000001" and mv_by_product[p_sku_001]["location_from_id"] == bangalore_id)
-        ok &= check("DEMO-SKU-002 movement qty=9, canonical barcode", mv_by_product.get(p_sku_002) and mv_by_product[p_sku_002]["quantity"] == 9 and mv_by_product[p_sku_002]["sku_code"] == "9000000000002")
+        ok &= check("DEMO-SKU-001 movement qty=46, canonical barcode, source warehouse", mv_by_product.get(p_sku_001) and mv_by_product[p_sku_001]["quantity"] == 46 and mv_by_product[p_sku_001]["sku_code"] == "9000000000001" and mv_by_product[p_sku_001]["location_from_id"] == bangalore_id)
+        ok &= check("DEMO-SKU-002 movement qty=35, canonical barcode", mv_by_product.get(p_sku_002) and mv_by_product[p_sku_002]["quantity"] == 35 and mv_by_product[p_sku_002]["sku_code"] == "9000000000002")
         ok &= check("movements link source_grn_line_item_id", all(m["source_grn_line_item_id"] is not None for m in movements))
         ok &= check("movement_type = sale", all(m["movement_type"] == "sale" for m in movements))
         ok &= check("no legacy products row created (movement path)", table_count(conn, "products") == legacy_products_before)
@@ -289,8 +289,8 @@ def run():
         commitment_after = sum(r["qty"] for r in reconcile.committed_quantity(conn) if r["po_number"] == "SYN-PO-1001")
         ok &= check("commitment after posting = 0", commitment_after == 0, str(commitment_after))
 
-        ok &= check("Passionfruit balance = 80 after sale + shortfall", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_001) == 80)
-        ok &= check("Yuzu balance = 90 after sale + shortfall", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_002) == 90)
+        ok &= check("Passionfruit balance = 52 after sale + shortfall", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_001) == 52)
+        ok &= check("Yuzu balance = 64 after sale + shortfall", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_002) == 64)
 
         staged_grn_after = staging.get_staged_grn(conn, fixture_grn["staged_grn_id"])
         ok &= check("staged_grn.posted_grn_id set", staged_grn_after["posted_grn_id"] == grn_id_1)
@@ -310,7 +310,7 @@ def run():
         ok &= check("no duplicate grn_receipts row", table_count(conn, "grn_receipts") == grn_count_after_1)
         ok &= check("no duplicate grn_line_items rows", table_count(conn, "grn_line_items") == line_count_after_1)
         ok &= check("no duplicate inventory_movements", table_count(conn, "inventory_movements") == movement_count_after_1)
-        ok &= check("balances unchanged by idempotent re-post", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_001) == 80)
+        ok &= check("balances unchanged by idempotent re-post", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_001) == 52)
 
         # -----------------------------------------------------------------
         print("\n--- Posted revalidation lock ---")

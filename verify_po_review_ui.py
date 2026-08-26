@@ -167,8 +167,8 @@ def _run_checks():
         )
         if n_pos != 6:
             failures.append(f"  upload 2: expected 6 staged POs, got {n_pos}")
-        if n_lines != 7:
-            failures.append(f"  upload 2: expected 7 staged lines, got {n_lines}")
+        if n_lines != 11:
+            failures.append(f"  upload 2: expected 11 staged lines, got {n_lines}")
 
     # 3. Re-upload identical file -> reuses existing batch
     resp2 = upload_csv(client, review_fixture, filename=REVIEW_FIXTURE_NAME)
@@ -210,8 +210,8 @@ def _run_checks():
             failures.append("  review 7: batch page did not show SYN-PO-1001")
 
         summary = staging.batch_summary(conn, batch_id)
-        if summary["orders"] != 6 or summary["lines"] != 7:
-            failures.append(f"  review 8: expected 6 orders / 7 lines, got {summary}")
+        if summary["orders"] != 6 or summary["lines"] != 11:
+            failures.append(f"  review 8: expected 6 orders / 11 lines, got {summary}")
         if summary["needs_source"] != 6 or summary["ready"] != 0 or summary["blocked"] != 0:
             failures.append(f"  review 9: freshly staged valid POs should all be NEEDS SOURCE, got {summary}")
 

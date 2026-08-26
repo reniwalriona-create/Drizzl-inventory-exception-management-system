@@ -241,10 +241,10 @@ def run():
             (grn_batch_id,),
         ).fetchone()["n"]
 
-        ok &= check("11 raw rows", raw_row_count == 11, f"got {raw_row_count}")
+        ok &= check("15 raw rows", raw_row_count == 15, f"got {raw_row_count}")
         ok &= check("3 staged GRNs", staged_grn_count == 3, f"got {staged_grn_count}")
-        ok &= check("10 normalized staged GRN lines", line_count == 10, f"got {line_count}")
-        ok &= check("10/10 lines have product_id resolved", resolved_count == 10, f"got {resolved_count}")
+        ok &= check("14 normalized staged GRN lines", line_count == 14, f"got {line_count}")
+        ok &= check("14/14 lines have product_id resolved", resolved_count == 14, f"got {resolved_count}")
         ok &= check("no legacy products rows created", table_count(conn, "products") == 0)
 
         def staged_grn_by_number(num):
@@ -293,10 +293,14 @@ def run():
         print("\n--- PR cross-check (independent oracle, never staged) ---")
         pr_rows = load_pr_rows()
         pr_expected = [
-            ("SYN-GRN-1001", "DEMO-SKU-001", 18, 2),
-            ("SYN-GRN-1001", "DEMO-SKU-002", 9, 1),
+            ("SYN-GRN-1001", "DEMO-SKU-001", 46, 2),
+            ("SYN-GRN-1001", "DEMO-SKU-002", 35, 1),
+            ("SYN-GRN-1001", "DEMO-SKU-003", 57, 3),
+            ("SYN-GRN-1001", "DEMO-SKU-004", 40, 2),
+            ("SYN-GRN-1001", "DEMO-SKU-005", 29, 1),
+            ("SYN-GRN-1001", "DEMO-SKU-006", 51, 3),
         ]
-        ok &= check("public discrepancy oracle has 2 relevant rows", len(pr_rows) == 2, f"got {len(pr_rows)}")
+        ok &= check("public discrepancy oracle has 6 relevant rows", len(pr_rows) == 6, f"got {len(pr_rows)}")
         pr_by_key = {(r["GrnNumber"], r["SkuCode"]): r for r in pr_rows}
         for grn_num, sku, accepted, rejected in pr_expected:
             pr = pr_by_key.get((grn_num, sku))
@@ -326,8 +330,8 @@ def run():
 
         comparison = staging.get_grn_po_comparison(conn, fixture_grn["staged_grn_id"])
         comp_by_sku = {r["external_sku"]: r for r in comparison}
-        ok &= check("DEMO-SKU-001: ordered 20, received 18, discrepancy 2", comp_by_sku["DEMO-SKU-001"]["ordered_qty"] == 20 and comp_by_sku["DEMO-SKU-001"]["received_qty"] == 18 and comp_by_sku["DEMO-SKU-001"]["computed_discrepancy_qty"] == 2)
-        ok &= check("DEMO-SKU-002: ordered 10, received 9, discrepancy 1", comp_by_sku["DEMO-SKU-002"]["ordered_qty"] == 10 and comp_by_sku["DEMO-SKU-002"]["received_qty"] == 9 and comp_by_sku["DEMO-SKU-002"]["computed_discrepancy_qty"] == 1)
+        ok &= check("DEMO-SKU-001: ordered 48, received 46, discrepancy 2", comp_by_sku["DEMO-SKU-001"]["ordered_qty"] == 48 and comp_by_sku["DEMO-SKU-001"]["received_qty"] == 46 and comp_by_sku["DEMO-SKU-001"]["computed_discrepancy_qty"] == 2)
+        ok &= check("DEMO-SKU-002: ordered 36, received 35, discrepancy 1", comp_by_sku["DEMO-SKU-002"]["ordered_qty"] == 36 and comp_by_sku["DEMO-SKU-002"]["received_qty"] == 35 and comp_by_sku["DEMO-SKU-002"]["computed_discrepancy_qty"] == 1)
 
         # -----------------------------------------------------------------
         print("\n--- Expected quarantine: two GRNs with missing official POs ---")
@@ -365,8 +369,8 @@ def run():
         ok &= check("SYN-GRN-LATE missing-PO error is gone", not any(e["code"] == "official_po_not_found" for e in chm_grn_after["po_verification_errors"]))
         ok &= check("SYN-GRN-LATE now verified", chm_grn_after["po_verification_status"] == "verified", str(chm_grn_after["po_verification_errors"]))
         ok &= check("SYN-GRN-LATE official_po_id populated", chm_grn_after["official_po_id"] is not None)
-        ok &= check("Raw/normalization data untouched by revalidation (still 10 total lines)",
-                     conn.execute("SELECT COUNT(*) AS n FROM staged_grn_lines l JOIN staged_grns g ON g.staged_grn_id=l.staged_grn_id WHERE g.batch_id=?", (grn_batch_id,)).fetchone()["n"] == 10)
+        ok &= check("Raw/normalization data untouched by revalidation (still 14 total lines)",
+                     conn.execute("SELECT COUNT(*) AS n FROM staged_grn_lines l JOIN staged_grns g ON g.staged_grn_id=l.staged_grn_id WHERE g.batch_id=?", (grn_batch_id,)).fetchone()["n"] == 14)
 
         # -----------------------------------------------------------------
         print("\n--- Destination mismatch (controlled) ---")

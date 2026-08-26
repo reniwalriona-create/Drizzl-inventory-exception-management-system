@@ -107,14 +107,14 @@ def check_fixture_file(conn, failures):
             (batch_id,),
         ).fetchone()["n"]
 
-        if n_rows != 2:
-            failures.append(f"  expected 2 raw rows, got {n_rows}")
+        if n_rows != 6:
+            failures.append(f"  expected 6 raw rows, got {n_rows}")
         if n_pos != 1:
             failures.append(f"  expected 1 staged PO, got {n_pos}")
-        if n_lines != 2:
-            failures.append(f"  expected 2 staged lines, got {n_lines}")
-        if n_with_product != 2:
-            failures.append(f"  expected 2/2 staged lines to resolve a product_id, got {n_with_product}")
+        if n_lines != 6:
+            failures.append(f"  expected 6 staged lines, got {n_lines}")
+        if n_with_product != 6:
+            failures.append(f"  expected 6/6 staged lines to resolve a product_id, got {n_with_product}")
 
         # 1. non-null source_location_id check (must ALL be NULL)
         non_null_source = table_count(conn, "staged_purchase_orders", "batch_id = ? AND source_location_id IS NOT NULL", (batch_id,))
@@ -147,7 +147,7 @@ def check_fixture_file(conn, failures):
         if table_count(conn, "products") != legacy_products_before:
             failures.append("  legacy products table row count changed -- staging must never call _ensure_product()")
 
-        # 8. Two rows sharing the same number normalize to one PO.
+        # 8. Six rows sharing the same number normalize to one PO.
         grouped = conn.execute(
             "SELECT staged_po_id FROM staged_purchase_orders WHERE batch_id = ? AND external_po_number = ?",
             (batch_id, "SYN-PO-1001"),
@@ -156,8 +156,8 @@ def check_fixture_file(conn, failures):
             failures.append(f"  expected exactly 1 staged PO for SYN-PO-1001, got {len(grouped)}")
         else:
             grouped_lines = table_count(conn, "staged_po_lines", "staged_po_id = ?", (grouped[0]["staged_po_id"],))
-            if grouped_lines != 2:
-                failures.append(f"  expected 2 staged lines for SYN-PO-1001, got {grouped_lines}")
+            if grouped_lines != 6:
+                failures.append(f"  expected 6 staged lines for SYN-PO-1001, got {grouped_lines}")
 
         # 7. raw row preserves original CSV values in JSONB
         # (source_row_number=1 is the file's first data row -- PoNumber
