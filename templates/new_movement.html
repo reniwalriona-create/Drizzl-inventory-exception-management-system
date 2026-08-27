@@ -62,6 +62,31 @@
   </form>
 </div>
 {% else %}
+<details class="panel">
+  <summary>Add a new location</summary>
+  <p class="subtitle">Create a warehouse, consignment partner, or market-event location. It will immediately appear in the movement dropdowns.</p>
+  <form method="post" action="{{ url_for('create_location') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="row" style="align-items:flex-end;">
+      <div class="field">
+        <label for="new_location_name">Location name</label>
+        <input type="text" name="name" id="new_location_name" maxlength="100" placeholder="e.g. New York Warehouse" required>
+      </div>
+      <div class="field">
+        <label for="new_location_type">Location type</label>
+        <select name="type" id="new_location_type" required>
+          {% for location_type in location_types %}
+          <option value="{{ location_type }}">{{ location_type.replace('_', ' ')|capitalize }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field" style="flex:0;">
+        <button type="submit">Add location</button>
+      </div>
+    </div>
+  </form>
+</details>
+
 <div class="panel">
   <h2 style="margin-top:0;">Movement details</h2>
   <form method="post">
@@ -117,7 +142,7 @@
         </select>
       </div>
     </div>
-    <p class="subtitle" style="margin-top:-4px;">To add a new warehouse location, contact the developer.</p>
+    <p class="subtitle" style="margin-top:-4px;">Need another place? Use “Add a new location” above, then select it here.</p>
 
     <div class="field">
       <label for="reason">Reason (e.g. "flea_market", "consignment_transfer", "damaged")</label>

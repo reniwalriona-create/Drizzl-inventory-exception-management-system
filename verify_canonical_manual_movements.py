@@ -48,6 +48,41 @@ def run_checks():
         check("brand-new SKU description input is absent", 'name="sku_desc"' not in body, failures)
         check("short active Master Product label is listed", product_label(product["product_name"]) in body, failures)
         check("barcode is absent from the product dropdown", product["barcode"] not in body, failures)
+        check("add-location form is present", 'action="/locations/new"' in body, failures)
+
+        location_created = client.post(
+            "/locations/new",
+            data={"name": "Portfolio Pop-up", "type": "market_event"},
+            follow_redirects=True,
+        )
+        location_body = location_created.get_data(as_text=True)
+        check("new location can be created", "Portfolio Pop-up" in location_body, failures)
+        saved_location = conn.execute(
+            "SELECT type FROM locations WHERE name = ?", ("Portfolio Pop-up",)
+        ).fetchone()
+        check(
+            "new location preserves its type",
+            saved_location and saved_location["type"] == "market_event",
+            failures,
+        )
+
+        duplicate = client.post(
+            "/locations/new",
+            data={"name": "portfolio pop-up", "type": "own_facility"},
+            follow_redirects=True,
+        )
+        check("location names are duplicate-safe", "already exists" in duplicate.get_data(as_text=True), failures)
+        location_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM locations WHERE LOWER(name) = LOWER(?)", ("Portfolio Pop-up",)
+        ).fetchone()["n"]
+        check("case-only duplicate creates no row", location_count == 1, failures)
+
+        invalid_location = client.post(
+            "/locations/new",
+            data={"name": "Invalid Type", "type": "not_a_real_type"},
+            follow_redirects=True,
+        )
+        check("unknown location type is rejected", "valid location type" in invalid_location.get_data(as_text=True), failures)
 
         before_legacy = conn.execute("SELECT COUNT(*) AS n FROM products").fetchone()["n"]
         created = client.post(

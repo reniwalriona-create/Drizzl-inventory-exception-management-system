@@ -895,6 +895,54 @@ def new_movement():
         conn.close()
 
 
+@app.route("/locations/new", methods=["POST"])
+def create_location():
+    """Create a reusable inventory location from the movement screen."""
+    name = (request.form.get("name") or "").strip()
+    location_type = request.form.get("type") or ""
+
+    if not name:
+        flash("Enter a location name.", "error")
+        return redirect(url_for("new_movement"))
+    if len(name) > 100:
+        flash("Location name must be 100 characters or fewer.", "error")
+        return redirect(url_for("new_movement"))
+    if location_type not in LOCATION_TYPES:
+        flash("Choose a valid location type.", "error")
+        return redirect(url_for("new_movement"))
+
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT name FROM locations WHERE LOWER(name) = LOWER(?)",
+            (name,),
+        ).fetchone()
+        if existing is not None:
+            flash(f"Location '{existing['name']}' already exists.", "warning")
+            return redirect(url_for("new_movement"))
+
+        conn.execute(
+            "INSERT INTO locations (name, type) VALUES (?, ?)",
+            (name, location_type),
+        )
+        log_activity(
+            conn,
+            "location_created",
+            f"Added {location_type.replace('_', ' ')} location {name}",
+            "location",
+            name,
+        )
+        conn.commit()
+        flash(f"Location '{name}' added. It is now available in the movement dropdowns.", "success")
+    except Exception as e:
+        conn.rollback()
+        log.exception("Unexpected error creating inventory location")
+        flash(_developer_error_message(e, "Failed to add location"), "error")
+    finally:
+        conn.close()
+    return redirect(url_for("new_movement"))
+
+
 @app.route("/flags/<int:flag_id>/resolve", methods=["POST"])
 def resolve_flag(flag_id):
     conn = get_connection()
