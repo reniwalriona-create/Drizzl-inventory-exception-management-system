@@ -62,8 +62,8 @@
   </form>
 </div>
 {% else %}
-<details class="panel">
-  <summary>Add a new location</summary>
+<div class="panel" id="new_location_panel" style="display:none; border-color:var(--accent);">
+  <h2 style="margin-top:0;">Add a new location</h2>
   <p class="subtitle">Create a warehouse, consignment partner, or market-event location. It will immediately appear in the movement dropdowns.</p>
   <form method="post" action="{{ url_for('create_location') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -85,7 +85,7 @@
       </div>
     </div>
   </form>
-</details>
+</div>
 
 <div class="panel">
   <h2 style="margin-top:0;">Movement details</h2>
@@ -129,6 +129,7 @@
         <select name="location_from" id="location_from">
           <option value="">Choose location...</option>
           {% for l in locations %}<option value="{{ l.name }}">{{ l.name }}</option>{% endfor %}
+          <option value="__add_location__">+ Add new location...</option>
         </select>
       </div>
     </div>
@@ -139,6 +140,7 @@
         <select name="location_to" id="location_to">
           <option value="">Choose location...</option>
           {% for l in locations %}<option value="{{ l.name }}">{{ l.name }}</option>{% endfor %}
+          <option value="__add_location__">+ Add new location...</option>
         </select>
       </div>
     </div>
@@ -236,6 +238,21 @@
     var toField = document.getElementById("location_to");
     var fromHint = document.getElementById("from_hint");
     var toHint = document.getElementById("to_hint");
+    var newLocationPanel = document.getElementById("new_location_panel");
+    var newLocationName = document.getElementById("new_location_name");
+
+    function offerLocationCreation(field) {
+      field.addEventListener("change", function () {
+        if (field.value !== "__add_location__") return;
+        field.value = "";
+        newLocationPanel.style.display = "block";
+        newLocationName.focus();
+        newLocationPanel.scrollIntoView({behavior: "smooth", block: "center"});
+      });
+    }
+
+    offerLocationCreation(fromField);
+    offerLocationCreation(toField);
 
     function today() {
       var d = new Date();

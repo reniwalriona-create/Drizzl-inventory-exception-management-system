@@ -49,6 +49,7 @@ def run_checks():
         check("short active Master Product label is listed", product_label(product["product_name"]) in body, failures)
         check("barcode is absent from the product dropdown", product["barcode"] not in body, failures)
         check("add-location form is present", 'action="/locations/new"' in body, failures)
+        check("location dropdown offers creation", body.count('+ Add new location...') == 2, failures)
 
         location_created = client.post(
             "/locations/new",
