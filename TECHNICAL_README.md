@@ -139,6 +139,8 @@ For anything beyond local development, run behind gunicorn instead:
 
 One command, one PASS/FAIL summary — runs every business-logic and security verification suite plus a read-only integrity audit of the live database. See "Verification" below for what each suite actually covers.
 
+GitHub Actions runs the same PostgreSQL-backed gate on every push and pull request to `main`; the root README badge links to the latest result.
+
 ## Synthetic portfolio demo
 
 All data in `fixtures/synthetic/` is fictional, contains no production data, and is safe to use for a public portfolio demonstration. Six CSVs form two independent, complete PO → GRN → discrepancy chains. Each contains six product lines using the mapped synthetic SKUs `DEMO-SKU-001` through `DEMO-SKU-006`. Both GRNs intentionally receive fewer units than ordered; their matching discrepancy files classify the resulting loss without deducting inventory a second time. Two additional warehouse-mix CSVs add four exact-receipt shipments, giving the warehouse visualization six distinct Demo Commerce receiving hubs instead of one placeholder destination.

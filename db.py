@@ -1,5 +1,8 @@
-"""Database connection helper. Connects to the drizzl_inventory_portfolio_demo Postgres
-database, creating its tables/seed data from schema_postgres.sql on first use."""
+"""PostgreSQL connection helper.
+
+Connects through ``config.DATABASE_URL`` and creates the portfolio schema and
+synthetic reference data on the first non-production connection.
+"""
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
@@ -10,11 +13,8 @@ import config
 # "postgresql://user:pass@host:5432/dbname" or the local dev default
 # "dbname=drizzl_inventory_portfolio_demo") is the source of truth for which
 # database to connect to -- config.py resolves it from the environment,
-# with a local-dev fallback. DB_NAME stays exported for anything that
-# still wants just the database's short name (informational only, e.g.
-# db.py's own __main__ printout) -- it is never used to build the actual
-# connection anymore.
-DB_NAME = "drizzl_inventory_portfolio_demo"
+# with a local-dev fallback. No second database-name constant is kept here:
+# diagnostics ask PostgreSQL which database the connection actually reached.
 SCHEMA_PATH = Path(__file__).parent / "schema_postgres.sql"
 # Phase 1 catalog seed (master_products + customer_product_skus). Reuses
 # the migration file directly instead of duplicating its idempotent seed
@@ -112,9 +112,10 @@ def get_connection():
 
 if __name__ == "__main__":
     conn = get_connection()
+    database_name = conn.execute("SELECT current_database() AS name").fetchone()["name"]
     tables = conn.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
     ).fetchall()
-    print(f"Connected to Postgres database '{DB_NAME}'")
+    print(f"Connected to Postgres database '{database_name}'")
     print("Tables:", ", ".join(t["table_name"] for t in tables))
     conn.close()

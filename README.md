@@ -1,5 +1,7 @@
 # Inventory and Exception Management for a Growing Beverage Company
 
+[![Verification](https://github.com/reniwalriona-create/Drizzl-inventory-exception-management-system/actions/workflows/verify.yml/badge.svg)](https://github.com/reniwalriona-create/Drizzl-inventory-exception-management-system/actions/workflows/verify.yml)
+
 An internal inventory ledger and B2B document-reconciliation system designed and built for **Drizzl**, a probiotic soda brand managing seven products across two company warehouses and approximately 15 customer fulfillment locations in India.
 
 **Role:** Product & Business Analyst / Project Lead<br>
@@ -74,7 +76,7 @@ The product was developed iteratively from August 7 through August 26, 2026. Del
 
 ## Validation and current status
 
-The verification suite covers product identity, staged imports, posting, inventory behavior, corrections, security, reporting, and database integrity. Mutating checks use disposable PostgreSQL databases rather than operational records.
+The PostgreSQL-backed verification workflow covers product identity, staged imports, posting, inventory behavior, corrections, security, reporting, and database integrity. Mutating checks use disposable databases rather than operational records, and the same 15-suite gate runs automatically on every push and pull request to `main`.
 
 The system is currently a controlled pilot release. I do not claim measured business impact yet. The pilot is intended to evaluate reconciliation time, missing-document frequency, inventory-warning accuracy, manual-movement adoption, shortfall and debit visibility, and user feedback.
 
