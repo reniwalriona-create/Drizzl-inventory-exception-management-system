@@ -1,4 +1,4 @@
-"""Stage Scootsy PR/discrepancy CSVs and classify existing GRN shortfall losses.
+"""Stage Demo Commerce PR/discrepancy CSVs and classify existing GRN shortfall losses.
 
 Classification never creates or changes movement quantities. The GRN posting
 path already removed the full PO quantity; this module only records why the

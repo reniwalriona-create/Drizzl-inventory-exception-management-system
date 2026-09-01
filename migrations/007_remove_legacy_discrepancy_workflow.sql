@@ -4,7 +4,7 @@
 -- now has authoritative ordered/received data of its own (official
 -- purchase_orders/po_line_items vs. grn_receipts/grn_line_items), so
 -- reconcile.py's official_discrepancies() computes PO-vs-GRN shortfall
--- fresh from posted records -- see PROJECT_HANDOFF.md's Phase 9 writeup.
+-- fresh from posted records -- see TECHNICAL_README.md's Phase 9 writeup.
 --
 -- Safe to drop: discrepancy_notes and discrepancy_note_items were both
 -- empty at the time this was written (real business data hadn't started

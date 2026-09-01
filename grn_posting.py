@@ -49,7 +49,7 @@ def _load_selection(conn, batch_id, staged_grn_ids):
     """Loads AND locks (SELECT ... FOR UPDATE, deterministic ascending-id
     order) every selected staged_grns row -- the lock, plus the PO-row
     lock in _lock_purchase_orders(), is what makes concurrent posting
-    requests safe (see module docstring and PROJECT_HANDOFF.md)."""
+    requests safe (see module docstring and TECHNICAL_README.md)."""
     staged_grn_ids = list(staged_grn_ids)
     if not staged_grn_ids:
         raise PostingError("No staged GRNs were selected.")

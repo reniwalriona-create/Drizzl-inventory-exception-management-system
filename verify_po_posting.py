@@ -28,7 +28,7 @@ import po_posting
 import reconcile
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "demo_po_01.csv"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 TEST_DB_NAME = "drizzl_inventory_test_phase5"
 
 REAL_HEADER = [
@@ -155,9 +155,9 @@ def run():
     ok = True
 
     try:
-        scootsy_id = get_customer_id(conn, SCOOTSY_NAME)
+        demo_customer_id = get_customer_id(conn, DEMO_CUSTOMER_NAME)
         bangalore_id = get_location_id(conn, "Drizzl Demo Warehouse")
-        ok &= check("Scootsy seeded", scootsy_id is not None)
+        ok &= check("Demo Commerce seeded", demo_customer_id is not None)
         ok &= check("Drizzl Demo Warehouse seeded", bangalore_id is not None)
 
         baseline_movements = table_count(conn, "inventory_movements")
@@ -165,7 +165,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Staging public demo PO plus generated atomicity rows ---")
-        result = staging.stage_po_csv(conn, expanded_fixture, customer_id=scootsy_id, filename="demo_po_posting.csv")
+        result = staging.stage_po_csv(conn, expanded_fixture, customer_id=demo_customer_id, filename="demo_po_posting.csv")
         conn.commit()
         batch_real = result["batch_id"]
         summary = staging.batch_summary(conn, batch_real)
@@ -203,7 +203,7 @@ def run():
         ok &= check("Test1: official PO created", official_po is not None)
         if official_po:
             ok &= check("Test1: po_number matches", official_po["po_number"] == staged_p0["external_po_number"])
-            ok &= check("Test1: customer_id matches", official_po["customer_id"] == scootsy_id)
+            ok &= check("Test1: customer_id matches", official_po["customer_id"] == demo_customer_id)
             ok &= check("Test1: source_location_id matches assigned source exactly", official_po["source_location_id"] == bangalore_id)
             ok &= check(
                 "Test1: destination_* kept separate from source",
@@ -276,7 +276,7 @@ def run():
 
         # Synthetic blocked staged PO (unmapped SKU), source assigned anyway (allowed, per Phase 4 rule)
         blocked_csv = write_csv([row(PoNumber="SYN-BLOCKED-0001", SkuCode="999999", SkuDescription="Unknown SKU")])
-        rblk = staging.stage_po_csv(conn, blocked_csv, customer_id=scootsy_id, filename="synthetic_blocked.csv")
+        rblk = staging.stage_po_csv(conn, blocked_csv, customer_id=demo_customer_id, filename="synthetic_blocked.csv")
         conn.commit()
         batch_blocked = rblk["batch_id"]
         blocked_po = staging.list_staged_pos(conn, batch_blocked)[0]
@@ -327,7 +327,7 @@ def run():
         original_row = conn.execute("SELECT * FROM purchase_orders WHERE po_id = ?", (p5_po_id,)).fetchone()
 
         dup_csv = write_csv([row(PoNumber=p5_number, SkuCode="DEMO-SKU-002", SkuDescription="Drizzl Yuzu | Probiotic Soda", OrderedQty="99")])
-        rdup = staging.stage_po_csv(conn, dup_csv, customer_id=scootsy_id, filename="synthetic_duplicate.csv")
+        rdup = staging.stage_po_csv(conn, dup_csv, customer_id=demo_customer_id, filename="synthetic_duplicate.csv")
         conn.commit()
         batch_dup = rdup["batch_id"]
         dup_po = staging.list_staged_pos(conn, batch_dup)[0]
@@ -485,7 +485,7 @@ def run():
         print("\n--- Test 11: legacy PDF-style line (no product_id) still resolves via item_code/item_desc ---")
         conn.execute(
             "INSERT INTO purchase_orders (po_number, customer_id, source_location_id) VALUES (?, ?, ?)",
-            ("LEGACY-PO-0001", scootsy_id, bangalore_id),
+            ("LEGACY-PO-0001", demo_customer_id, bangalore_id),
         )
         conn.execute(
             "INSERT INTO products (sku_code, sku_desc) VALUES (?, ?)",

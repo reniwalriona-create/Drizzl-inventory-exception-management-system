@@ -10,7 +10,7 @@
 --
 -- 2. Real, mid-implementation finding: a correction must let a
 --    corrected replacement GRN reuse its predecessor's grn_number (the
---    two are the same physical delivery, and Scootsy's own GRN number
+--    two are the same physical delivery, and Demo Commerce's own GRN number
 --    doesn't change) -- but grn_receipts.grn_number was a blanket
 --    UNIQUE column (both alone, and via UNIQUE(customer_id,
 --    grn_number)), and grn_line_items.grn_number was a REAL foreign
@@ -25,7 +25,7 @@
 --    to "unique among ACTIVE (non-voided) rows" via a partial unique
 --    index -- a voided, superseded GRN and its active replacement can
 --    now legitimately share a grn_number; two simultaneously-active
---    GRNs still cannot. See PROJECT_HANDOFF.md's Phase 10 writeup and
+--    GRNs still cannot. See TECHNICAL_README.md's Phase 10 writeup and
 --    grn_posting.py/reconcile.py for every read path that had to move
 --    from grn_number-text matching to grn_id.
 --

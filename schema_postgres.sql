@@ -10,10 +10,9 @@
 -- computed fresh from official posted records, never uploaded as its
 -- own document (see reconcile.py's official_discrepancies(), Phase 9).
 
--- Businesses that send Drizzl POs and buy from them (Scootsy today, more
--- retail partners expected). Note: in the PO/GRN PDFs themselves, "Vendor
--- Name" means Drizzl/Demo Beverage Company (the seller) -- this table is
--- the other side of that relationship, the buyer, hence "customers".
+-- Businesses that send Drizzl POs and buy from it. In the synthetic PO/GRN
+-- fixtures, "Vendor Name" means Drizzl (the seller); this table represents
+-- the buyer side of that relationship, hence "customers".
 CREATE TABLE customers (
     id         SERIAL PRIMARY KEY,
     name       TEXT UNIQUE NOT NULL,
@@ -34,7 +33,7 @@ CREATE TABLE products (
 );
 
 -- Physical/logical places stock can sit: Drizzl's own facilities,
--- consignment partners, one-off market events. Scootsy's own warehouses
+-- consignment partners, one-off market events. Demo Commerce's own warehouses
 -- are NOT modeled here -- once a GRN is confirmed there, that stock is
 -- sold and off Drizzl's books, so there's no running balance to track.
 CREATE TABLE locations (
@@ -116,9 +115,9 @@ CREATE INDEX idx_movements_date ON inventory_movements(movement_date);
 -- po_number is kept as the join key across tables rather than a synthetic
 -- id, since every document we've seen prints it as the natural reference.
 -- Known limitation: this assumes PO numbers stay unique across customers.
--- True today (only Scootsy). Revisit with a composite (customer_id,
--- po_number) key if/when a second customer's numbering scheme is known
--- to collide with Scootsy's.
+-- The pilot currently supports one document source. Revisit with a composite
+-- (customer_id, po_number) key if a second customer's numbering scheme can
+-- collide with the first source's identifiers.
 -- Phase 2 (2026-08-15): po_id is the real internal identity now, not
 -- po_number. po_number stays NOT NULL + UNIQUE as temporary backwards-
 -- compatible scaffolding -- po_line_items/appointments/grn_receipts/
@@ -129,7 +128,7 @@ CREATE INDEX idx_movements_date ON inventory_movements(movement_date);
 -- is the future business-identity rule, temporarily redundant with the
 -- table-wide UNIQUE(po_number) until child tables migrate off po_number
 -- and that global uniqueness can be relaxed to allow cross-customer PO
--- number collisions. See PROJECT_HANDOFF.md and
+-- number collisions. See TECHNICAL_README.md and
 -- migrations/002_po_identity_foundation.sql.
 CREATE TABLE purchase_orders (
     po_id                    BIGSERIAL PRIMARY KEY,
@@ -161,9 +160,9 @@ CREATE TABLE purchase_orders (
     external_status                   TEXT,
     supplier_code                      TEXT,
     -- The Drizzl location expected to fulfill this PO -- e.g. "Mumbai".
-    -- Completely separate from facility_name above, which is Scootsy's
+    -- Completely separate from facility_name above, which is Demo Commerce's
     -- own receiving warehouse ("DEMO FACILITY A") -- never inferred from one
-    -- another (a Scootsy facility code doesn't reliably map to a Drizzl
+    -- another (a Demo Commerce facility code doesn't reliably map to a Drizzl
     -- location). Null means "not allocated yet"; assigned via
     -- ingest.py's assign_po_source_location(), never guessed. Drives
     -- both the Committed-inventory calculation (reconcile.py's
@@ -254,7 +253,7 @@ CREATE TABLE grn_receipts (
     -- Phase 10: NOT unique on its own -- see the partial unique index
     -- below (grn_receipts_active_grn_number_key). A corrected
     -- replacement legitimately shares its predecessor's grn_number
-    -- (same physical delivery, same Scootsy-issued number) while the
+    -- (same physical delivery, same Demo Commerce-issued number) while the
     -- predecessor is voided; two simultaneously ACTIVE GRNs still can't
     -- share one. grn_line_items no longer FKs to this column (it FKs to
     -- grn_id instead, below) specifically because a plain/partial
@@ -373,7 +372,7 @@ CREATE TABLE grn_line_items (
     external_sku_description  TEXT,
     -- Preserved source rejection facts -- never the source of truth for
     -- the PO-vs-GRN commitment discrepancy (that's ordered - received,
-    -- computed fresh; see PROJECT_HANDOFF.md).
+    -- computed fresh; see TECHNICAL_README.md).
     source_dn_quantity        NUMERIC CHECK (source_dn_quantity >= 0),
     source_dn_value           NUMERIC
 );
@@ -484,7 +483,7 @@ CREATE INDEX idx_activity_log_created_at ON activity_log(created_at);
 -- Phase 10: audit trail for correcting an already-assigned PO source
 -- warehouse (ingest.py's correct_po_source_location()). Every change is
 -- a durable, queryable row, never a silent overwrite of
--- purchase_orders.source_location_id -- see PROJECT_HANDOFF.md. A
+-- purchase_orders.source_location_id -- see TECHNICAL_README.md. A
 -- reason is required at the application layer; NOT NULL here is the
 -- backstop.
 CREATE TABLE po_source_corrections (
@@ -513,7 +512,7 @@ CREATE TABLE debit_note_items (
 -- Phase 1 of the Master Product / customer-SKU identity system (added
 -- 2026-08-15). Deliberately NOT wired into any table above yet -- the
 -- legacy `products` table (keyed by sku_code) keeps working exactly as
--- before for every existing PO/GRN/movement path. See PROJECT_HANDOFF.md.
+-- before for every existing PO/GRN/movement path. See TECHNICAL_README.md.
 
 -- Drizzl's own canonical product catalog. barcode is the real-world
 -- business identifier; product_id is only the internal relational key.
@@ -717,7 +716,7 @@ CREATE INDEX idx_staged_po_lines_validation_status ON staged_po_lines(validation
 -- for the full rationale (also in this file's header comments there).
 -- Zero official-ledger effect: grn_receipts/grn_line_items/
 -- inventory_movements are never touched by anything that populates these
--- tables. See grn_csv_staging.py and PROJECT_HANDOFF.md.
+-- tables. See grn_csv_staging.py and TECHNICAL_README.md.
 
 -- One row per uploaded GRN CSV file. Unlike the PO CSV, this export does
 -- NOT identify the customer/buyer anywhere in its own data (VendorName/

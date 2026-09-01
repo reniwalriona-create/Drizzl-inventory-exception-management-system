@@ -226,8 +226,16 @@ def run():
     dashboard_response = client.get("/")
     ok &= check("authenticated HTML is not browser-cached", dashboard_response.headers.get("Cache-Control") == "no-store")
     visible_error = _developer_error_message(RuntimeError("database connection refused"))
-    ok &= check("technical error tells user to contact developer", "Contact the developer immediately" in visible_error)
-    ok &= check("technical error includes exception type and message", "RuntimeError: database connection refused" in visible_error)
+    ok &= check("development error includes useful local diagnostics", "RuntimeError: database connection refused" in visible_error)
+    original_production_mode = config.IS_PRODUCTION
+    try:
+        config.IS_PRODUCTION = True
+        production_error = _developer_error_message(RuntimeError("database connection refused"))
+        ok &= check("production error omits the exception type", "RuntimeError" not in production_error)
+        ok &= check("production error omits the exception message", "database connection refused" not in production_error)
+        ok &= check("production error gives a safe next step", "contact the system administrator" in production_error)
+    finally:
+        config.IS_PRODUCTION = original_production_mode
 
     print("\n--- manual movement edge-case validation ---")
     for bad_quantity in ("nan", "inf", "-inf", "0", "-1"):

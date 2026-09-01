@@ -21,7 +21,7 @@ from verify_db import bootstrap_connection, create_database, drop_database
 ROOT = Path(__file__).resolve().parent
 FIXTURES = ROOT / "fixtures" / "synthetic"
 TEST_DB_NAME = "drizzl_inventory_test_synthetic_fixtures"
-CUSTOMER_NAME = "Scootsy Logistics Private Limited"
+CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 SOURCE_LOCATION = "Drizzl Demo Warehouse"
 
 CHAINS = (
@@ -181,7 +181,7 @@ def run():
             "Short delivery": Decimal("9"),
         }, "dashboard cause totals include all five classified scenarios")
 
-        # Add four exact-receipt shipments to distinct Scootsy destinations so
+        # Add four exact-receipt shipments to distinct Demo Commerce destinations so
         # the warehouse visualization demonstrates a useful distribution.
         mix_po_path = FIXTURES / "demo_po_warehouse_mix.csv"
         staged = po_csv_staging.stage_po_csv(conn, mix_po_path, customer_id=customer_id, filename=mix_po_path.name)
@@ -202,7 +202,7 @@ def run():
         conn.commit()
 
         facility_totals = reconcile.po_quantity_by_facility(conn)
-        check(len(facility_totals) == 6, "PO quantity by warehouse visualization contains six Scootsy receiving hubs")
+        check(len(facility_totals) == 6, "PO quantity by warehouse visualization contains six Demo Commerce receiving hubs")
         tracker = {row["po_number"]: row for row in reconcile.po_grn_fulfillment(conn)}
         check(all(tracker[c["po"]]["fulfillment_status"] == "grn_posted_discrepancy" for c in CHAINS), "PO-GRN Tracker includes both completed discrepancy chains")
         for chain in CHAINS:

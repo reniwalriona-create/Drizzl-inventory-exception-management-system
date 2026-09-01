@@ -1,13 +1,13 @@
 """
 GRN CSV staging (Phase 6).
 
-Stages a bulk Scootsy-style GRN CSV export into grn_import_batches /
+Stages a bulk Demo Commerce-style GRN CSV export into grn_import_batches /
 grn_import_rows / staged_grns / staged_grn_lines / staged_grn_line_source_rows,
 normalizes raw rows into physical receipt lines, and verifies each staged
 GRN against an official PO. Nothing here ever touches the official ledger
 (grn_receipts, grn_line_items, inventory_movements) -- a staged GRN is not
 an official GRN. Posting/review UI are later phases. See
-PROJECT_HANDOFF.md.
+TECHNICAL_README.md.
 
 Unlike the PO CSV (which names its customer via an Entity column), this
 export identifies the SUPPLIER (Drizzl itself, via VendorName/SupplierCode)
@@ -188,7 +188,7 @@ def _parse_line_fields(row):
     """Parses every known per-row field. Returns (fields_dict, errors) --
     fields_dict always has every key (None where absent/unparseable), so a
     malformed row still gets a normalized object retained where possible,
-    per PROJECT_HANDOFF.md."""
+    per TECHNICAL_README.md."""
     fields = {}
     errors = []
 

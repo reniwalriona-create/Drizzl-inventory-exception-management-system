@@ -7,7 +7,7 @@
 -- product_id/external_sku/external_sku_description/external_tax_amount
 -- left NULL, exactly as it always has.
 --
--- sku_code identity note (see PROJECT_HANDOFF.md): reconcile.py's
+-- sku_code identity note (see TECHNICAL_README.md): reconcile.py's
 -- committed_quantity() and friends deliberately keep using
 -- po_line_items.item_code as the join key against inventory_movements/
 -- grn_line_items -- that stays true even after this migration. product_id

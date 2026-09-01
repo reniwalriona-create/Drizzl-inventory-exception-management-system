@@ -30,7 +30,7 @@ import ingest
 import reconcile
 
 TEST_DB_NAME = "drizzl_inventory_test_phase10"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 
 GRN_HEADER = [
     "GrnNumber", "PurchaseOrderNumber", "FacilityName", "SupplierCode", "VendorName",
@@ -119,7 +119,7 @@ def get_test_connection():
     return conn
 
 
-def get_customer_id(conn, name=SCOOTSY_NAME):
+def get_customer_id(conn, name=DEMO_CUSTOMER_NAME):
     return conn.execute("SELECT id FROM customers WHERE name = ?", (name,)).fetchone()["id"]
 
 

@@ -91,13 +91,13 @@ def parse_grn_pdf(file_path):
         # Facility name: unlike the PO PDF (which prints a short code like
         # "DEMO FACILITY A"), the GRN PDF doesn't have a compact facility code
         # anywhere -- only the receiving warehouse operator's name, on the
-        # second line of the page (line 1 is always the constant "SCOOTSY
+        # second line of the page (line 1 is always the constant "DEMO_CUSTOMER
         # LOGISTICS PRIVATE LIMITED" boilerplate). This is a weaker signal
         # than the PO's -- an operator name, not a facility code -- but
         # it's the only facility-identifying text this document has.
         lines = [l.strip() for l in full_text.splitlines() if l.strip()]
         header['facility_name'] = None
-        if len(lines) >= 2 and lines[0] == 'SCOOTSY LOGISTICS PRIVATE LIMITED':
+        if len(lines) >= 2 and lines[0] == 'DEMO COMMERCE LOGISTICS PRIVATE LIMITED':
             header['facility_name'] = lines[1]
 
         # line items, row-span driven by the (multi-line) sku_desc column

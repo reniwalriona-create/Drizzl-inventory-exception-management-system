@@ -1,6 +1,6 @@
 # Technical Overview: Inventory and Exception Management for a Growing Beverage Company
 
-> An internal inventory ledger and B2B document-reconciliation system built for **Drizzl**, a probiotic soda brand — evolved over thirteen engineering phases from a single-customer parsing prototype into a canonical-identity, staging-then-posting inventory platform with a correction/audit trail.
+> A privately deployed inventory ledger and B2B document-reconciliation system built for **Drizzl**, with canonical product identity, staged document posting, and history-preserving corrections.
 
 **Stack:** Python · Flask · PostgreSQL · Werkzeug/Flask-Login · Flask-WTF
 **Focus:** inventory-ledger design, B2B document reconciliation, canonical product identity, and the operational discipline (staging, atomic posting, void/supersede) that keeps a real business's numbers trustworthy.
@@ -13,8 +13,8 @@ The walkthrough uses fictional portfolio data to demonstrate manual inventory mo
 
 ## Case studies
 
-- [Short case study](case-study/CASE_STUDY_SHORT.md) — a concise product and impact overview
-- [Long case study](README.md) — detailed discovery, design, implementation, validation, and rollout
+- [Short case study](README.md) — a concise product and impact overview
+- [Long case study](case-study/CASE_STUDY_LONG.md) — detailed discovery, design, implementation, validation, and rollout
 
 ## Current operator workflow (updated 2026-08-24)
 
@@ -97,7 +97,7 @@ Copy `.env.example` to `.env` and fill in values (or export them in your shell).
 
 **4. Schema / migrations**
 
-A fresh database: `./.venv/bin/python db.py` creates every table from `schema_postgres.sql` and seeds reference data (Scootsy as the one customer, Drizzl Demo Warehouse as the one location, the 7 Master Products + known SKU mappings) on first connection.
+A fresh database: `./.venv/bin/python db.py` creates every table from `schema_postgres.sql` and seeds reference data (Demo Commerce as the one customer, Drizzl Demo Warehouse as the one location, the 7 Master Products + known SKU mappings) on first connection.
 
 An existing database that predates a phase: apply every file in `migrations/` in numeric order —
 
@@ -141,7 +141,7 @@ One command, one PASS/FAIL summary — runs every business-logic and security ve
 
 ## Synthetic portfolio demo
 
-All data in `fixtures/synthetic/` is fictional, contains no production data, and is safe to use for a public portfolio demonstration. Six CSVs form two independent, complete PO → GRN → discrepancy chains. Each contains six product lines using the mapped synthetic SKUs `DEMO-SKU-001` through `DEMO-SKU-006`. Both GRNs intentionally receive fewer units than ordered; their matching discrepancy files classify the resulting loss without deducting inventory a second time. Two additional warehouse-mix CSVs add four exact-receipt shipments, giving the warehouse visualization six distinct Scootsy receiving hubs instead of one placeholder destination.
+All data in `fixtures/synthetic/` is fictional, contains no production data, and is safe to use for a public portfolio demonstration. Six CSVs form two independent, complete PO → GRN → discrepancy chains. Each contains six product lines using the mapped synthetic SKUs `DEMO-SKU-001` through `DEMO-SKU-006`. Both GRNs intentionally receive fewer units than ordered; their matching discrepancy files classify the resulting loss without deducting inventory a second time. Two additional warehouse-mix CSVs add four exact-receipt shipments, giving the warehouse visualization six distinct Demo Commerce receiving hubs instead of one placeholder destination.
 
 A configured PostgreSQL database and an application user are required. The seeded source warehouse **Drizzl Demo Warehouse** must exist. Upload the files in this order:
 
@@ -237,18 +237,18 @@ There's no automated backup service in this repository — this is a manual, doc
 
 **Health check.** `GET /health` (no auth required) returns `{"status": "ok"}` if the process is up and can reach the database, `{"status": "unavailable"}` (503) otherwise. It reveals nothing about schema or configuration — safe to point a load balancer or uptime monitor at.
 
-**Logs.** The app logs to stderr (timestamp, level, message). At the prototype owner's request, unexpected error types/messages are also shown to signed-in operators with instructions to contact the developer; full tracebacks remain server-side only.
+**Logs.** The app logs timestamped technical details to stderr. Production users receive a generic error message, while development mode may show the exception type and message for local diagnosis. Full tracebacks remain server-side only.
 
 ## Current limitations
 
-This is a real, working internal tool, not a finished product. Known gaps, deliberately not addressed yet:
+This is a controlled pilot release with deliberately scoped limitations:
 
 - single shared operator role — no per-permission access control
 - no automated backup scheduling (documented manual process only, see above)
-- not deployed anywhere — everything above describes running it locally or on a server you provision yourself
+- the operational instance is privately deployed and restricted to its intended users; this sanitized portfolio repository is not connected to that instance and does not provide a public application login
 - Debit Notes and appointment-slot CSVs are CLI-only (`ingest.py`), not wired into the web UI
 - two customers sharing a PO/GRN number is still unsupported (`purchase_orders.po_number`/legacy `grn_number` global-uniqueness scaffolding from early phases, revisit when a second customer's numbering scheme actually collides)
 
 ## What I learned building this
 
-I started this project as a recent Information Science graduate, not a trained software engineer, building it iteratively with AI-assisted development while deliberately focusing on understanding the architecture and the business logic rather than treating generated code as a finished product. The most valuable parts weren't the CRUD scaffolding — they were the modeling decisions that came from real operational edge cases: separating physical inventory from commitments, using an event ledger instead of a mutable stock field, recognizing that a customer's SKU string isn't the system's true product identity before a second customer's documents ever arrived, and designing corrections so the system stays explainable (void + supersede, never silently overwrite) rather than just producing the right total. Phases 9–12 were as much about *removing* things safely — a whole document workflow, several ambiguous joins, an insecure default — as they were about adding new capability, which turned out to be its own kind of engineering discipline.
+The most valuable work was not the interface scaffolding. It was translating operational edge cases into durable system rules: separating physical inventory from commitments, using an event ledger instead of a mutable stock field, treating external SKU strings as mappings rather than product identity, and preserving correction history through void and supersession workflows. Iterative testing also required removing obsolete paths, tightening ambiguous joins, and replacing insecure defaults. I used AI-assisted development tools during implementation while retaining responsibility for the architecture, business logic, validation, and final output.

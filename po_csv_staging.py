@@ -1,7 +1,7 @@
 """
 PO CSV staging (Phase 3).
 
-Stages a bulk Scootsy-style PO CSV export into po_import_batches /
+Stages a bulk Demo Commerce-style PO CSV export into po_import_batches /
 po_import_rows / staged_purchase_orders / staged_po_lines. Nothing here
 ever touches the official ledger (purchase_orders, po_line_items,
 inventory_movements, grn_receipts, debit_notes) -- a staged PO is not an
@@ -14,7 +14,7 @@ and a fatal error can be rolled back cleanly by the caller.
 
 Deliberately does not use ingest.py's _ensure_product()/legacy products
 table, and does not call any function with official ledger effects
-(upsert_po(), record_movement(), etc.) -- see PROJECT_HANDOFF.md.
+(upsert_po(), record_movement(), etc.) -- see TECHNICAL_README.md.
 """
 import csv
 import hashlib
@@ -350,7 +350,7 @@ def review_status(validation_status, source_location_id, posted_po_id=None, dupl
     """The UI-only review state derived from Phase 3's validation_status,
     whether a Drizzl source has been manually assigned, and (Phase 5)
     whether this staged PO has been posted to the official ledger -- see
-    PROJECT_HANDOFF.md. Deliberately not a stored column: 'posted' takes
+    TECHNICAL_README.md. Deliberately not a stored column: 'posted' takes
     precedence over everything else once posted_po_id is set (posting is
     permanent -- a posted PO's validation_status/source can't un-post it);
     'blocked' means a data/product validation problem exists (source

@@ -93,10 +93,10 @@ def parse_po_pdf(file_path):
                 )
                 header['vendor_name'] = ' '.join(w['text'] for w in name_words)
 
-        # Facility name (Scootsy's receiving warehouse code, e.g. "DEMO FACILITY A")
+        # Facility name (Demo Commerce's receiving warehouse code, e.g. "DEMO FACILITY A")
         # -- printed as the first part of the "Shipping Address" block,
         # right column. Layout: label row ("Billing Address" | "Shipping
-        # Address"), then a company-name row (always "SCOOTSY LOGISTICS
+        # Address"), then a company-name row (always "DEMO_CUSTOMER LOGISTICS
         # PRIVATE LIMITED"), then the facility code + street address row
         # ("DEMO FACILITY A, B-400, ..."). We only want the code before the first
         # comma, not the full address. The "Billing"/"Shipping" labels sit

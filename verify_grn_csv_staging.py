@@ -30,7 +30,7 @@ FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "synthetic"
 PO_FIXTURE = FIXTURE_DIR / "demo_po_01.csv"
 GRN_FIXTURE = FIXTURE_DIR / "demo_grn_01.csv"
 PR_FIXTURE = FIXTURE_DIR / "demo_discrepancy_01.csv"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 TEST_DB_NAME = "drizzl_inventory_test_phase6"
 
 GRN_HEADER = [
@@ -201,9 +201,9 @@ def run():
     ok = True
 
     try:
-        scootsy_id = get_customer_id(conn, SCOOTSY_NAME)
+        demo_customer_id = get_customer_id(conn, DEMO_CUSTOMER_NAME)
         bangalore_id = get_location_id(conn, "Drizzl Demo Warehouse")
-        ok &= check("Scootsy seeded", scootsy_id is not None)
+        ok &= check("Demo Commerce seeded", demo_customer_id is not None)
         ok &= check("Drizzl Demo Warehouse seeded", bangalore_id is not None)
 
         baseline_grn_receipts = table_count(conn, "grn_receipts")
@@ -211,7 +211,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Setup: stage + post public SYN-PO-1001 ---")
-        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=scootsy_id, filename=PO_FIXTURE.name)
+        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=demo_customer_id, filename=PO_FIXTURE.name)
         conn.commit()
         po_batch_id = po_result["batch_id"]
         staged_pos = po_csv_staging.list_staged_pos(conn, po_batch_id)
@@ -225,7 +225,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Staging public demo GRN plus controlled normalization rows ---")
-        grn_result = staging.stage_grn_csv(conn, expanded_grn, customer_id=scootsy_id, filename="demo_grn_staging.csv")
+        grn_result = staging.stage_grn_csv(conn, expanded_grn, customer_id=demo_customer_id, filename="demo_grn_staging.csv")
         conn.commit()
         grn_batch_id = grn_result["batch_id"]
 
@@ -350,7 +350,7 @@ def run():
         chm_sku = "DEMO-SKU-003"
         chm_product_id = product_id_for_sku(conn, chm_sku)
         insert_official_po(
-            conn, "SYN-PO-LATE", scootsy_id, bangalore_id, "Synthetic Late Facility", "DEMO-SUPPLIER-001",
+            conn, "SYN-PO-LATE", demo_customer_id, bangalore_id, "Synthetic Late Facility", "DEMO-SUPPLIER-001",
             "DRIZZL DEMO VENDOR",
             [
                 (chm_product_id, chm_sku, 72),
@@ -376,9 +376,9 @@ def run():
         print("\n--- Destination mismatch (controlled) ---")
         mismatch_csv = write_csv([grow(GrnNumber="SYNGRN-DEST", PurchaseOrderNumber="SYNPO-DEST", FacilityName="WRONG FACILITY")])
         p1 = product_id_for_sku(conn, "DEMO-SKU-001")
-        insert_official_po(conn, "SYNPO-DEST", scootsy_id, bangalore_id, "RIGHT FACILITY", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
+        insert_official_po(conn, "SYNPO-DEST", demo_customer_id, bangalore_id, "RIGHT FACILITY", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
         conn.commit()
-        r = staging.stage_grn_csv(conn, mismatch_csv, customer_id=scootsy_id, filename="synthetic_dest.csv")
+        r = staging.stage_grn_csv(conn, mismatch_csv, customer_id=demo_customer_id, filename="synthetic_dest.csv")
         conn.commit()
         dest_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, dest_grn["staged_grn_id"])
@@ -389,7 +389,7 @@ def run():
         print("\n--- Product/SKU mismatch scenarios (controlled) ---")
         # Unknown customer SKU
         unknown_csv = write_csv([grow(GrnNumber="SYNGRN-UNK", PurchaseOrderNumber="SYNPO0001", SkuCode="999999", SkuDescription="Unknown")])
-        r = staging.stage_grn_csv(conn, unknown_csv, customer_id=scootsy_id, filename="synthetic_unknown.csv")
+        r = staging.stage_grn_csv(conn, unknown_csv, customer_id=demo_customer_id, filename="synthetic_unknown.csv")
         conn.commit()
         unk_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         unk_lines = staging.get_staged_grn_lines(conn, unk_grn["staged_grn_id"])
@@ -398,10 +398,10 @@ def run():
 
         # Known Master Product but SKU not present on official PO
         p2 = product_id_for_sku(conn, "DEMO-SKU-003")
-        insert_official_po(conn, "SYNPO-NOSKU", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p2, "999888", 10)])
+        insert_official_po(conn, "SYNPO-NOSKU", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p2, "999888", 10)])
         conn.commit()
         nosku_csv = write_csv([grow(GrnNumber="SYNGRN-NOSKU", PurchaseOrderNumber="SYNPO-NOSKU", SkuCode="DEMO-SKU-003", SkuDescription="Drizzl Mixed Berry")])
-        r = staging.stage_grn_csv(conn, nosku_csv, customer_id=scootsy_id, filename="synthetic_nosku.csv")
+        r = staging.stage_grn_csv(conn, nosku_csv, customer_id=demo_customer_id, filename="synthetic_nosku.csv")
         conn.commit()
         nosku_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, nosku_grn["staged_grn_id"])
@@ -410,10 +410,10 @@ def run():
 
         # Product not represented on official PO at all
         p3 = product_id_for_sku(conn, "DEMO-SKU-004")
-        insert_official_po(conn, "SYNPO-NOPROD", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
+        insert_official_po(conn, "SYNPO-NOPROD", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
         conn.commit()
         noprod_csv = write_csv([grow(GrnNumber="SYNGRN-NOPROD", PurchaseOrderNumber="SYNPO-NOPROD", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint")])
-        r = staging.stage_grn_csv(conn, noprod_csv, customer_id=scootsy_id, filename="synthetic_noprod.csv")
+        r = staging.stage_grn_csv(conn, noprod_csv, customer_id=demo_customer_id, filename="synthetic_noprod.csv")
         conn.commit()
         noprod_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, noprod_grn["staged_grn_id"])
@@ -422,11 +422,11 @@ def run():
 
         # Legacy PO line with no product_id
         conn.execute("INSERT INTO purchase_orders (po_number, customer_id, source_location_id, destination_facility_name, facility_name, supplier_code, vendor_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                     ("SYNPO-LEGACY", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR"))
+                     ("SYNPO-LEGACY", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR"))
         conn.execute("INSERT INTO po_line_items (po_number, item_code, qty) VALUES (?, ?, ?)", ("SYNPO-LEGACY", "DEMO-SKU-001", 10))
         conn.commit()
         legacy_csv = write_csv([grow(GrnNumber="SYNGRN-LEGACY", PurchaseOrderNumber="SYNPO-LEGACY")])
-        r = staging.stage_grn_csv(conn, legacy_csv, customer_id=scootsy_id, filename="synthetic_legacy.csv")
+        r = staging.stage_grn_csv(conn, legacy_csv, customer_id=demo_customer_id, filename="synthetic_legacy.csv")
         conn.commit()
         legacy_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, legacy_grn["staged_grn_id"])
@@ -436,10 +436,10 @@ def run():
         # -----------------------------------------------------------------
         print("\n--- Quantity behavior (controlled) ---")
         # Exact receipt
-        insert_official_po(conn, "SYNPO-EXACT", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 100)])
+        insert_official_po(conn, "SYNPO-EXACT", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 100)])
         conn.commit()
         exact_csv = write_csv([grow(GrnNumber="SYNGRN-EXACT", PurchaseOrderNumber="SYNPO-EXACT", ReceivedQty="100")])
-        r = staging.stage_grn_csv(conn, exact_csv, customer_id=scootsy_id, filename="synthetic_exact.csv")
+        r = staging.stage_grn_csv(conn, exact_csv, customer_id=demo_customer_id, filename="synthetic_exact.csv")
         conn.commit()
         exact_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, exact_grn["staged_grn_id"])
@@ -447,10 +447,10 @@ def run():
         ok &= check("exact receipt (100/100): verified", result["po_verification_status"] == "verified", str(result))
 
         # Partial receipt (600 ordered, 200 received) -- still valid, no ledger effect
-        insert_official_po(conn, "SYNPO-PARTIAL", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 600)])
+        insert_official_po(conn, "SYNPO-PARTIAL", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 600)])
         conn.commit()
         partial_csv = write_csv([grow(GrnNumber="SYNGRN-PARTIAL", PurchaseOrderNumber="SYNPO-PARTIAL", ReceivedQty="200")])
-        r = staging.stage_grn_csv(conn, partial_csv, customer_id=scootsy_id, filename="synthetic_partial.csv")
+        r = staging.stage_grn_csv(conn, partial_csv, customer_id=demo_customer_id, filename="synthetic_partial.csv")
         conn.commit()
         partial_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, partial_grn["staged_grn_id"])
@@ -462,10 +462,10 @@ def run():
 
         # Product entirely absent from GRN -- ordered 50, GRN has 0 lines for it
         p_absent = product_id_for_sku(conn, "DEMO-SKU-002")
-        insert_official_po(conn, "SYNPO-ABSENT", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 20), (p_absent, "DEMO-SKU-002", 50)])
+        insert_official_po(conn, "SYNPO-ABSENT", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 20), (p_absent, "DEMO-SKU-002", 50)])
         conn.commit()
         absent_csv = write_csv([grow(GrnNumber="SYNGRN-ABSENT", PurchaseOrderNumber="SYNPO-ABSENT", ReceivedQty="20")])
-        r = staging.stage_grn_csv(conn, absent_csv, customer_id=scootsy_id, filename="synthetic_absent.csv")
+        r = staging.stage_grn_csv(conn, absent_csv, customer_id=demo_customer_id, filename="synthetic_absent.csv")
         conn.commit()
         absent_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         staging.validate_staged_grn(conn, absent_grn["staged_grn_id"])
@@ -476,10 +476,10 @@ def run():
         ok &= check("product absent from GRN: computed_discrepancy_qty = 50", row_sku_002["computed_discrepancy_qty"] == 50)
 
         # Over-receipt
-        insert_official_po(conn, "SYNPO-OVER", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 100)])
+        insert_official_po(conn, "SYNPO-OVER", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 100)])
         conn.commit()
         over_csv = write_csv([grow(GrnNumber="SYNGRN-OVER", PurchaseOrderNumber="SYNPO-OVER", ReceivedQty="101")])
-        r = staging.stage_grn_csv(conn, over_csv, customer_id=scootsy_id, filename="synthetic_over.csv")
+        r = staging.stage_grn_csv(conn, over_csv, customer_id=demo_customer_id, filename="synthetic_over.csv")
         conn.commit()
         over_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, over_grn["staged_grn_id"])
@@ -490,7 +490,7 @@ def run():
         print("\n--- Exact-file idempotency ---")
         before_rows = table_count(conn, "grn_import_rows")
         before_grns = table_count(conn, "staged_grns")
-        r2 = staging.stage_grn_csv(conn, expanded_grn, customer_id=scootsy_id, filename="demo_grn_staging.csv")
+        r2 = staging.stage_grn_csv(conn, expanded_grn, customer_id=demo_customer_id, filename="demo_grn_staging.csv")
         conn.commit()
         ok &= check("re-staging identical file reuses the batch", r2["batch_id"] == grn_batch_id and r2["reused_existing_batch"])
         ok &= check("no new raw rows", table_count(conn, "grn_import_rows") == before_rows)
@@ -499,7 +499,7 @@ def run():
         # -----------------------------------------------------------------
         print("\n--- Different-file, same-GRN-number conflict ---")
         dup_grn_csv = write_csv([grow(GrnNumber="SYN-GRN-1001", PurchaseOrderNumber="SYN-PO-1001", ReceivedQty="19")])
-        r3 = staging.stage_grn_csv(conn, dup_grn_csv, customer_id=scootsy_id, filename="synthetic_duplicate_grn.csv")
+        r3 = staging.stage_grn_csv(conn, dup_grn_csv, customer_id=demo_customer_id, filename="synthetic_duplicate_grn.csv")
         conn.commit()
         ok &= check("different bytes, same GRN number -> new batch, not reused", not r3["reused_existing_batch"] and r3["batch_id"] != grn_batch_id)
         dup_staged = staging.list_staged_grns(conn, r3["batch_id"])[0]
@@ -511,10 +511,10 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Source is never guessed ---")
-        po_dest_mumbai_source_blr = insert_official_po(conn, "SYNPO-MUMBAI", scootsy_id, bangalore_id, "Mumbai", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
+        po_dest_mumbai_source_blr = insert_official_po(conn, "SYNPO-MUMBAI", demo_customer_id, bangalore_id, "Mumbai", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
         conn.commit()
         mumbai_csv = write_csv([grow(GrnNumber="SYNGRN-MUMBAI", PurchaseOrderNumber="SYNPO-MUMBAI", FacilityName="Mumbai")])
-        r = staging.stage_grn_csv(conn, mumbai_csv, customer_id=scootsy_id, filename="synthetic_mumbai.csv")
+        r = staging.stage_grn_csv(conn, mumbai_csv, customer_id=demo_customer_id, filename="synthetic_mumbai.csv")
         conn.commit()
         mumbai_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         staging.validate_staged_grn(conn, mumbai_grn["staged_grn_id"])
@@ -524,10 +524,10 @@ def run():
         ok &= check("staged_grns has no source-location column at all", "source_location_id" not in dict(conn.execute("SELECT * FROM staged_grns LIMIT 1").fetchone()).keys())
 
         # PO with source_location_id NULL
-        p_null_src = insert_official_po(conn, "SYNPO-NOSRC", scootsy_id, None, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
+        p_null_src = insert_official_po(conn, "SYNPO-NOSRC", demo_customer_id, None, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p1, "DEMO-SKU-001", 10)])
         conn.commit()
         nosrc_csv = write_csv([grow(GrnNumber="SYNGRN-NOSRC", PurchaseOrderNumber="SYNPO-NOSRC")])
-        r = staging.stage_grn_csv(conn, nosrc_csv, customer_id=scootsy_id, filename="synthetic_nosrc.csv")
+        r = staging.stage_grn_csv(conn, nosrc_csv, customer_id=demo_customer_id, filename="synthetic_nosrc.csv")
         conn.commit()
         nosrc_grn = staging.list_staged_grns(conn, r["batch_id"])[0]
         result = staging.validate_staged_grn(conn, nosrc_grn["staged_grn_id"])

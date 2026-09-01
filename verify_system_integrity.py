@@ -4,7 +4,7 @@ invariants against whatever the live drizzl_inventory database currently
 holds. This is a health check, not a test suite: it never writes
 anything, and it never repairs what it finds -- a detected inconsistency
 is reported for a human to investigate and fix deliberately (see
-PROJECT_HANDOFF.md's void/restore and correction-workflow philosophy:
+TECHNICAL_README.md's void/restore and correction-workflow philosophy:
 historical records are never silently mutated).
 
 Run directly: `python3 verify_system_integrity.py`. Exits 0 if every

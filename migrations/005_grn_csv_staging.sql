@@ -4,7 +4,7 @@
 -- Analogous to Phase 3 (PO CSV staging), but for GRNs. Creates ZERO
 -- official-ledger effect -- no grn_receipts/grn_line_items/
 -- inventory_movements are touched by anything in this migration or the
--- module it supports (grn_csv_staging.py). See PROJECT_HANDOFF.md.
+-- module it supports (grn_csv_staging.py). See TECHNICAL_README.md.
 --
 -- validation_status/validation_errors on staged_grns/staged_grn_lines
 -- describe problems intrinsic to the imported data itself (parsing,

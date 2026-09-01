@@ -3,7 +3,7 @@
 -- Nothing here reaches the official ledger (purchase_orders/po_line_items/
 -- inventory_movements/grn_receipts/discrepancy_notes/debit_notes) --
 -- staging, validation, and master-product resolution only. Review and
--- posting are later phases. See PROJECT_HANDOFF.md and po_csv_staging.py.
+-- posting are later phases. See TECHNICAL_README.md and po_csv_staging.py.
 --
 -- Idempotent -- safe to run more than once (CREATE TABLE/INDEX IF NOT
 -- EXISTS throughout; no existing table is altered, so there's no

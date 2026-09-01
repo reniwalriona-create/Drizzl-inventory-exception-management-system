@@ -28,7 +28,7 @@ from validate import validate_po, validate_grn, validate_debit_note, record_flag
 # removed once source locations became a real, explicit per-PO/GRN field
 # instead of an assumption; see resolve_grn_source_location() in
 # reconcile.py.)
-DEFAULT_CUSTOMER = "Scootsy Logistics Private Limited"
+DEFAULT_CUSTOMER = "Demo Commerce Logistics Private Limited"
 
 
 def _normalize_sku(code):
@@ -321,7 +321,7 @@ def unvoid_movement(conn, movement_id):
 
 def assign_po_source_location(conn, po_number, location_name, location_type="own_facility"):
     """Sets which Drizzl location a PO is expected to be fulfilled from
-    -- separate from facility_name (Scootsy's own receiving warehouse),
+    -- separate from facility_name (Demo Commerce's own receiving warehouse),
     never inferred automatically (see schema.sql's purchase_orders.
     source_location_id). This is what unlocks the Committed-inventory
     calculation for this PO's lines (reconcile.committed_quantity()) and
@@ -358,7 +358,7 @@ def correct_po_source_location(conn, po_number, new_location_name, reason, locat
     """Explicit, audited correction of an ALREADY-assigned PO source
     warehouse (Phase 10) -- the only way to change source_location_id
     once assign_po_source_location() has set it once. See
-    PROJECT_HANDOFF.md.
+    TECHNICAL_README.md.
 
     Blocked entirely if the PO already has an active (non-voided)
     official GRN, whether posted via the legacy PDF path (grn_receipts.
@@ -488,7 +488,7 @@ def _record_grn_sale(conn, grn_number, grn_date, sku_code, received_qty, source_
     location gets assigned later). A GRN is a real document -- never
     blocked for going negative, unlike a manual movement (see app.py's
     new_movement()). If it would, the movement still gets recorded
-    (Scootsy really did receive these units), but it's flagged: a
+    (Demo Commerce really did receive these units), but it's flagged: a
     negative result here almost always means an earlier production/
     transfer/opening_balance entry is missing, not that this GRN is
     wrong."""
@@ -515,7 +515,7 @@ def _canonical_sku_code(conn, product_id):
     never trusted from a caller-supplied value. This is what stops a
     future bug like product_id=Passionfruit + sku_code=<some customer's
     SKU> from ever creating an inconsistent inventory identity (Phase 8,
-    per PROJECT_HANDOFF.md)."""
+    per TECHNICAL_README.md)."""
     row = conn.execute("SELECT barcode FROM master_products WHERE product_id = ?", (product_id,)).fetchone()
     if row is None:
         raise ValueError(f"Master Product {product_id} does not exist.")

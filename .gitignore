@@ -27,3 +27,7 @@ __pycache__/
 # test artifacts
 .pytest_cache/
 *.egg-info/
+
+# local demo-rendering artifacts
+tmp/
+*.mov

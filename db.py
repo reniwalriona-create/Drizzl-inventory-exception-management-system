@@ -52,11 +52,11 @@ class _PGConnection:
 
 def _seed(conn):
     """Known reference data every install needs, independent of any
-    uploaded document: today's one real customer, and the home base
-    stock ships from."""
+    uploaded document: a synthetic demonstration customer and source
+    warehouse."""
     conn.execute(
         "INSERT INTO customers (name, notes) VALUES (?, ?)",
-        ("Scootsy Logistics Private Limited", "Swiggy Instamart's B2B fulfillment arm"),
+        ("Demo Commerce Logistics Private Limited", "Synthetic B2B fulfillment customer"),
     )
     conn.execute(
         "INSERT INTO locations (name, type) VALUES (?, ?)",
@@ -65,8 +65,8 @@ def _seed(conn):
 
 
 def _seed_catalog(conn):
-    """Must run after _seed() -- the migration file looks up Scootsy's
-    customer_id by name, so Scootsy has to already exist. Only called
+    """Must run after _seed() -- the migration file looks up Demo Commerce's
+    customer_id by name, so Demo Commerce has to already exist. Only called
     once, on a genuinely fresh install (same needs_seed gate as _seed()),
     not on every connection -- the migration itself is idempotent, but
     there's no reason to re-run it on every request."""
@@ -84,7 +84,7 @@ def get_connection():
     migration runner -- it only ever does a plain CREATE TABLE pass
     against a database with no `customers` table yet, never an ALTER/DROP,
     and becomes a pure no-op forever after the first real connection. In
-    production, provision the schema explicitly first (see README) so
+    production, provision the schema explicitly first (see TECHNICAL_README.md) so
     this path is never exercised by a live request."""
     raw_conn = psycopg2.connect(config.DATABASE_URL)
     conn = _PGConnection(raw_conn)

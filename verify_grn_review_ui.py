@@ -37,7 +37,7 @@ from app import app
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "synthetic"
 PO_FIXTURE = FIXTURE_DIR / "demo_po_01.csv"
 GRN_FIXTURE = FIXTURE_DIR / "demo_grn_01.csv"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 
 GRN_HEADER = [
     "GrnNumber", "PurchaseOrderNumber", "FacilityName", "SupplierCode", "VendorName",
@@ -215,7 +215,7 @@ def run():
     ok = True
 
     try:
-        scootsy_id = get_customer_id(conn, SCOOTSY_NAME)
+        demo_customer_id = get_customer_id(conn, DEMO_CUSTOMER_NAME)
         bangalore_id = get_location_id(conn, "Drizzl Demo Warehouse")
         p_sku_001 = product_id_for_sku(conn, "DEMO-SKU-001")
 
@@ -223,7 +223,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Setup: stage + post public SYN-PO-1001 (backend setup) ---")
-        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=scootsy_id, filename=PO_FIXTURE.name)
+        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=demo_customer_id, filename=PO_FIXTURE.name)
         conn.commit()
         po_batch_id = po_result["batch_id"]
         fixture_po = next(p for p in po_csv_staging.list_staged_pos(conn, po_batch_id) if p["external_po_number"] == "SYN-PO-1001")
@@ -252,18 +252,18 @@ def run():
         txt_path = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
         txt_path.write("not a csv")
         txt_path.close()
-        resp = upload_grn_csv(client, txt_path.name, customer_id=scootsy_id, filename="not_a_csv.txt")
+        resp = upload_grn_csv(client, txt_path.name, customer_id=demo_customer_id, filename="not_a_csv.txt")
         ok &= check("non-CSV upload rejected", resp.status_code == 302 and table_count(conn, "grn_import_batches") == batches_before)
 
         # -----------------------------------------------------------------
         print("\n--- Upload: fatal import leaves no partial batch ---")
         bad_csv = write_csv([{"OnlySomeColumn": "x"}], fieldnames=["OnlySomeColumn"])
-        resp = upload_grn_csv(client, bad_csv, customer_id=scootsy_id, filename="missing_columns.csv")
+        resp = upload_grn_csv(client, bad_csv, customer_id=demo_customer_id, filename="missing_columns.csv")
         ok &= check("fatal import (missing structural columns) -> no batch created", table_count(conn, "grn_import_batches") == batches_before)
 
         # -----------------------------------------------------------------
         print("\n--- Upload: the real GRN CSV ---")
-        resp = upload_grn_csv(client, expanded_grn, customer_id=scootsy_id, filename="demo_grn_review.csv")
+        resp = upload_grn_csv(client, expanded_grn, customer_id=demo_customer_id, filename="demo_grn_review.csv")
         ok &= check("valid upload -> redirect", resp.status_code == 302)
         grn_batch_id = batch_id_from_redirect(resp)
         ok &= check("batch_id resolved from redirect", grn_batch_id is not None)
@@ -275,7 +275,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Upload: exact-file idempotency ---")
-        resp2 = upload_grn_csv(client, expanded_grn, customer_id=scootsy_id, filename="demo_grn_review.csv")
+        resp2 = upload_grn_csv(client, expanded_grn, customer_id=demo_customer_id, filename="demo_grn_review.csv")
         batch_id2 = batch_id_from_redirect(resp2)
         ok &= check("re-upload same file/customer -> reuses batch", batch_id2 == grn_batch_id)
         ok &= check("no duplicate batch row", table_count(conn, "grn_import_batches", "batch_id = ?", (grn_batch_id,)) == 1)
@@ -351,7 +351,7 @@ def run():
         print("\n--- Revalidation after a previously-missing PO arrives ---")
         chm_sku = "DEMO-SKU-003"
         insert_official_po(
-            conn, "SYN-PO-LATE", scootsy_id, bangalore_id, "Synthetic Late Facility", "DEMO-SUPPLIER-001",
+            conn, "SYN-PO-LATE", demo_customer_id, bangalore_id, "Synthetic Late Facility", "DEMO-SUPPLIER-001",
             "DRIZZL DEMO VENDOR",
             [
                 (product_id_for_sku(conn, chm_sku), chm_sku, 72),
@@ -385,10 +385,10 @@ def run():
         # -----------------------------------------------------------------
         print("\n--- PO comparison: absent product + over-receipt (synthetic, via routes) ---")
         p_absent = product_id_for_sku(conn, "DEMO-SKU-002")
-        insert_official_po(conn, "SYNPO-ABSENT", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 20), (p_absent, "DEMO-SKU-002", 50)])
+        insert_official_po(conn, "SYNPO-ABSENT", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 20), (p_absent, "DEMO-SKU-002", 50)])
         conn.commit()
         absent_csv = write_csv([grow(GrnNumber="SYNGRN-ABSENT", PurchaseOrderNumber="SYNPO-ABSENT", ReceivedQty="20")])
-        resp = upload_grn_csv(client, absent_csv, customer_id=scootsy_id, filename="synthetic_absent.csv")
+        resp = upload_grn_csv(client, absent_csv, customer_id=demo_customer_id, filename="synthetic_absent.csv")
         absent_batch_id = batch_id_from_redirect(resp)
         client.post(f"/grn-import/{absent_batch_id}/revalidate")
         absent_grn = staging.list_staged_grns(conn, absent_batch_id)[0]
@@ -397,10 +397,10 @@ def run():
         ok &= check("absent-product PO comparison page 200", resp.status_code == 200)
         ok &= check("DEMO-SKU-002 shown with received 0 and discrepancy 50", "DEMO-SKU-002" in body and ">0<" in body and "50" in body)
 
-        insert_official_po(conn, "SYNPO-OVER", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 100)])
+        insert_official_po(conn, "SYNPO-OVER", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 100)])
         conn.commit()
         over_csv = write_csv([grow(GrnNumber="SYNGRN-OVER", PurchaseOrderNumber="SYNPO-OVER", ReceivedQty="101")])
-        resp = upload_grn_csv(client, over_csv, customer_id=scootsy_id, filename="synthetic_over.csv")
+        resp = upload_grn_csv(client, over_csv, customer_id=demo_customer_id, filename="synthetic_over.csv")
         over_batch_id = batch_id_from_redirect(resp)
         client.post(f"/grn-import/{over_batch_id}/revalidate")
         over_grn = staging.list_staged_grns(conn, over_batch_id)[0]
@@ -409,10 +409,10 @@ def run():
         ok &= check("over-receipt shows OVER and GRN is REVIEW REQUIRED", "OVER" in body and "REVIEW REQUIRED" in body)
 
         # partial receipt is NOT presented as an error
-        insert_official_po(conn, "SYNPO-PARTIAL", scootsy_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 600)])
+        insert_official_po(conn, "SYNPO-PARTIAL", demo_customer_id, bangalore_id, "DEMO FACILITY B", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 600)])
         conn.commit()
         partial_csv = write_csv([grow(GrnNumber="SYNGRN-PARTIAL", PurchaseOrderNumber="SYNPO-PARTIAL", ReceivedQty="200")])
-        resp = upload_grn_csv(client, partial_csv, customer_id=scootsy_id, filename="synthetic_partial.csv")
+        resp = upload_grn_csv(client, partial_csv, customer_id=demo_customer_id, filename="synthetic_partial.csv")
         partial_batch_id = batch_id_from_redirect(resp)
         client.post(f"/grn-import/{partial_batch_id}/revalidate")
         partial_grn = staging.list_staged_grns(conn, partial_batch_id)[0]
@@ -438,7 +438,7 @@ def run():
         resp = client.get("/grn-import")
         body = resp.data.decode()
         ok &= check("landing page 200", resp.status_code == 200)
-        ok &= check("customer dropdown lists Scootsy", SCOOTSY_NAME in body)
+        ok &= check("customer dropdown lists Demo Commerce", DEMO_CUSTOMER_NAME in body)
         ok &= check("recent imports listed", "demo_grn_review.csv" in body)
 
         tracker = client.get("/po-grn-tracker?status=awaiting_grn")

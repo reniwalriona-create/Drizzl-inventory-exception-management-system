@@ -71,7 +71,9 @@ log = logging.getLogger(__name__)
 
 
 def _developer_error_message(exc, action="The operation failed"):
-    """Expose the technical failure as explicitly requested for this prototype."""
+    """Return useful local diagnostics without exposing production internals."""
+    if config.IS_PRODUCTION:
+        return f"{action}. Please try again or contact the system administrator."
     detail = str(exc).strip() or exc.__class__.__name__
     return f"{action}. Contact the developer immediately and send them this error: {exc.__class__.__name__}: {detail}"
 
@@ -1185,7 +1187,7 @@ def imports_hub():
 
 @app.route("/discrepancy-import", methods=["GET", "POST"])
 def discrepancy_import():
-    """Stage a Scootsy discrepancy/PR CSV. This classifies an existing
+    """Stage a Demo Commerce discrepancy/PR CSV. This classifies an existing
     GRN shortfall loss; it never creates another inventory movement."""
     conn = get_connection()
     try:
@@ -1987,8 +1989,8 @@ def server_error(e):
 @app.errorhandler(Exception)
 def unhandled_exception(e):
     # Last-resort catch-all. We still never expose a traceback or the
-    # interactive debugger, but this prototype intentionally shows the
-    # exception type/message so an operator can send it to the developer.
+    # interactive debugger. Production responses stay generic; local
+    # development responses include enough detail for diagnosis.
     if isinstance(e, HTTPException):
         return e
     log.exception("Unhandled exception on %s", request.path)
@@ -2000,5 +2002,5 @@ if __name__ == "__main__":
     # whenever APP_ENV=production, so the interactive debugger and
     # tracebacks can never reach a production browser through this
     # entrypoint. For a real deployment, run behind gunicorn instead
-    # of python app.py -- see README ("Running the server").
+    # of python app.py -- see TECHNICAL_README.md ("Run the server").
     app.run(debug=config.DEBUG, port=int(os.environ.get("PORT", 5001)))

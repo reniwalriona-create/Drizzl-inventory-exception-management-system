@@ -23,7 +23,7 @@ from verify_db import bootstrap_connection, create_database, drop_database
 TEST_DB_NAME = "drizzl_inventory_test_po_staging"
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "demo_po_01.csv"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 
 REAL_HEADER = [
     "PoNumber", "Entity", "FacilityId", "FacilityName", "City", "PoCreatedAt", "PoModifiedAt",
@@ -34,7 +34,7 @@ REAL_HEADER = [
 ]
 
 BASE_ROW = {
-    "PoNumber": "TESTPO0001", "Entity": "SCOOTSY LOGISTICS PRIVATE LIMITED",
+    "PoNumber": "TESTPO0001", "Entity": "DEMO COMMERCE LOGISTICS PRIVATE LIMITED",
     "FacilityId": "TST", "FacilityName": "TEST FC", "City": "TESTCITY",
     "PoCreatedAt": "2026-08-15 00:00:00", "PoModifiedAt": "2026-08-15 00:00:00",
     "Status": "CONFIRMED", "SupplierCode": "DEMO-SUPPLIER-001", "VendorName": "DRIZZL DEMO VENDOR",
@@ -64,8 +64,8 @@ def write_csv(rows, fieldnames=REAL_HEADER):
     return f.name
 
 
-def get_scootsy_id(conn):
-    r = conn.execute("SELECT id FROM customers WHERE name = ?", (SCOOTSY_NAME,)).fetchone()
+def get_demo_customer_id(conn):
+    r = conn.execute("SELECT id FROM customers WHERE name = ?", (DEMO_CUSTOMER_NAME,)).fetchone()
     return r["id"] if r else None
 
 
@@ -130,7 +130,7 @@ def check_fixture_file(conn, failures):
         if sample is None:
             failures.append("  could not find SYN-PO-1001 to check destination-field preservation")
         else:
-            if sample["destination_facility_id"] != "SYN-FC-01" or sample["destination_facility_name"] != "Synthetic Test Facility" or sample["destination_city"] != "DEMO CITY":
+            if sample["destination_facility_id"] != "SYN-FC-01" or sample["destination_facility_name"] != "Demo Commerce Mumbai Bhiwandi Hub" or sample["destination_city"] != "MUMBAI":
                 failures.append(f"  destination fields for SYN-PO-1001 didn't match the fixture: {dict(sample)}")
             if sample["source_location_id"] is not None:
                 failures.append("  destination facility appears to have leaked into source_location_id")
@@ -243,7 +243,7 @@ def check_unknown_sku(conn, failures):
         # creating any Master Product automatically.
         product = catalog.get_master_product_by_barcode(conn, "9000000000001")
         catalog.add_customer_sku_mapping(
-            conn, get_scootsy_id(conn), product["product_id"], "UNKNOWN-SKU-9999"
+            conn, get_demo_customer_id(conn), product["product_id"], "UNKNOWN-SKU-9999"
         )
         staging.revalidate_product_mappings(conn, result["batch_id"])
         revalidated_line = conn.execute(
@@ -323,7 +323,7 @@ def check_inconsistent_po_metadata(conn, failures):
 
 def check_wrong_customer_fatal(conn, failures):
     rows = [
-        row(PoNumber="TESTPO0005", Entity="SCOOTSY LOGISTICS PRIVATE LIMITED"),
+        row(PoNumber="TESTPO0005", Entity="DEMO COMMERCE LOGISTICS PRIVATE LIMITED"),
         row(PoNumber="TESTPO0006", Entity="SOME OTHER COMPANY PRIVATE LIMITED"),
     ]
     path = write_csv(rows)
@@ -404,9 +404,9 @@ def run():
     conn = bootstrap_connection(TEST_DB_NAME)
     failures = []
     try:
-        scootsy_id = get_scootsy_id(conn)
-        if scootsy_id is None:
-            print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
+        demo_customer_id = get_demo_customer_id(conn)
+        if demo_customer_id is None:
+            print("FAILED: Demo Commerce customer not found -- cannot run the rest of the checks.")
             return False
 
         check_fixture_file(conn, failures)

@@ -9,7 +9,7 @@ references po_number, not po_id, until a later phase migrates them. The
 customer-issued PO number is exposed here semantically as
 external_po_number even though the physical column is still named
 po_number, deliberately avoiding a second, sync-risk-prone physical
-column for now. See PROJECT_HANDOFF.md and
+column for now. See TECHNICAL_README.md and
 migrations/002_po_identity_foundation.sql.
 """
 

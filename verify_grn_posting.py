@@ -8,7 +8,7 @@ record_inventory_flag()'s canonical mode).
 
 Runs entirely against a disposable throwaway Postgres database
 (drizzl_inventory_test_phase8) -- created/dropped for this run, never the
-real drizzl_inventory database. Uses the real Scootsy PO/GRN samples for
+real drizzl_inventory database. Uses the real Demo Commerce PO/GRN samples for
 the primary real-overlap checks (matching verify_po_posting.py and
 verify_grn_csv_staging.py's precedent), plus small synthetic PO/GRN CSV
 fixtures for the controlled scenarios the real file doesn't cover
@@ -34,7 +34,7 @@ import reconcile
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "synthetic"
 PO_FIXTURE = FIXTURE_DIR / "demo_po_01.csv"
 GRN_FIXTURE = FIXTURE_DIR / "demo_grn_01.csv"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 TEST_DB_NAME = "drizzl_inventory_test_phase8"
 
 GRN_HEADER = [
@@ -207,7 +207,7 @@ def run():
     ok = True
 
     try:
-        scootsy_id = get_customer_id(conn, SCOOTSY_NAME)
+        demo_customer_id = get_customer_id(conn, DEMO_CUSTOMER_NAME)
         bangalore_id = get_location_id(conn, "Drizzl Demo Warehouse")
         p_sku_001 = product_id_for_sku(conn, "DEMO-SKU-001")
         p_sku_005 = product_id_for_sku(conn, "DEMO-SKU-005")
@@ -221,7 +221,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Setup: public SYN-PO-1001 staged+posted, opening stock, public GRN staged ---")
-        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=scootsy_id, filename=PO_FIXTURE.name)
+        po_result = po_csv_staging.stage_po_csv(conn, PO_FIXTURE, customer_id=demo_customer_id, filename=PO_FIXTURE.name)
         conn.commit()
         po_batch_id = po_result["batch_id"]
         all_staged_pos = po_csv_staging.list_staged_pos(conn, po_batch_id)
@@ -238,7 +238,7 @@ def run():
         ok &= check("Passionfruit opening = 100", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_001) == 100)
         ok &= check("Yuzu opening = 100", reconcile.current_balance_by_product(conn, bangalore_id, p_sku_002) == 100)
 
-        grn_result = staging.stage_grn_csv(conn, GRN_FIXTURE, scootsy_id, filename=GRN_FIXTURE.name)
+        grn_result = staging.stage_grn_csv(conn, GRN_FIXTURE, demo_customer_id, filename=GRN_FIXTURE.name)
         conn.commit()
         real_batch_id = grn_result["batch_id"]
         staging.revalidate_grn_batch(conn, real_batch_id)
@@ -329,7 +329,7 @@ def run():
         # -----------------------------------------------------------------
         print("\n--- Duplicate-DN no-double-post + multi-lot posting ---")
         insert_official_po(
-            conn, "SYN-PO-NORM", scootsy_id, bangalore_id, "Synthetic Normalization Facility", "DEMO-SUPPLIER-001",
+            conn, "SYN-PO-NORM", demo_customer_id, bangalore_id, "Synthetic Normalization Facility", "DEMO-SUPPLIER-001",
             "DRIZZL DEMO VENDOR",
             [
                 (p_sku_001, "DEMO-SKU-001", 10), (p_sku_002, "DEMO-SKU-002", 72),
@@ -341,7 +341,7 @@ def run():
         conn.commit()
 
         norm_path = write_csv(normalization_rows())
-        norm_result = staging.stage_grn_csv(conn, norm_path, scootsy_id, filename="synthetic_normalization.csv")
+        norm_result = staging.stage_grn_csv(conn, norm_path, demo_customer_id, filename="synthetic_normalization.csv")
         norm_batch_id = norm_result["batch_id"]
         staging.revalidate_grn_batch(conn, norm_batch_id)
         conn.commit()
@@ -368,10 +368,10 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Partial receipt: full commitment release despite shortfall ---")
-        insert_official_po(conn, "PARTIALPO001", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 600)])
+        insert_official_po(conn, "PARTIALPO001", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 600)])
         conn.commit()
         partial_csv_rows = [grow(GrnNumber="PARTIALGRN001", PurchaseOrderNumber="PARTIALPO001", FacilityName="TESTFAC", ReceivedQty="200")]
-        _, partial_grns = stage_and_verify(conn, partial_csv_rows, scootsy_id, "synthetic_partial.csv")
+        _, partial_grns = stage_and_verify(conn, partial_csv_rows, demo_customer_id, "synthetic_partial.csv")
         partial_grn = partial_grns["PARTIALGRN001"]
         ok &= check("partial GRN verified", partial_grn["review_status"] == "verified", str(partial_grn))
         commitment_before_partial = sum(r["qty"] for r in reconcile.committed_quantity(conn) if r["po_number"] == "PARTIALPO001")
@@ -400,7 +400,7 @@ def run():
             "RejectedReasons": "Damaged",
         }], DISCREPANCY_HEADER)
         staged_discrepancy = discrepancy_csv_staging.stage_csv(
-            conn, discrepancy_path, scootsy_id, filename="discrepancy.csv"
+            conn, discrepancy_path, demo_customer_id, filename="discrepancy.csv"
         )
         conn.commit()
         _, discrepancy_lines = discrepancy_csv_staging.get_batch(conn, staged_discrepancy["batch_id"])
@@ -411,7 +411,7 @@ def run():
         movement_after = conn.execute("SELECT quantity,notes FROM inventory_movements WHERE id=?", (partial_loss[0]["id"],)).fetchone()
         ok &= check("one discrepancy row classified", classified == 1)
         ok &= check("classification records cause without changing quantity", movement_after["quantity"] == movement_before and movement_after["notes"] == "Damaged", str(dict(movement_after)))
-        duplicate = discrepancy_csv_staging.stage_csv(conn, discrepancy_path, scootsy_id, filename="again.csv")
+        duplicate = discrepancy_csv_staging.stage_csv(conn, discrepancy_path, demo_customer_id, filename="again.csv")
         ok &= check("same discrepancy file is idempotent", duplicate["reused"] and duplicate["batch_id"] == staged_discrepancy["batch_id"])
 
         mismatch_path = write_csv([{
@@ -419,17 +419,17 @@ def run():
             "SkuCode": "DEMO-SKU-001", "AcceptedQty": "201", "TotalRejectedQty": "399",
             "RejectedReasons": "Short",
         }], DISCREPANCY_HEADER)
-        mismatch = discrepancy_csv_staging.stage_csv(conn, mismatch_path, scootsy_id, filename="mismatch.csv")
+        mismatch = discrepancy_csv_staging.stage_csv(conn, mismatch_path, demo_customer_id, filename="mismatch.csv")
         conn.commit()
         _, mismatch_lines = discrepancy_csv_staging.get_batch(conn, mismatch["batch_id"])
         ok &= check("wrong rejected quantity is blocked", mismatch_lines[0]["review_status"] == "blocked", mismatch_lines[0]["review_message"])
 
         # -----------------------------------------------------------------
         print("\n--- Product completely absent from GRN: full release for BOTH products ---")
-        insert_official_po(conn, "ABSENTPO001", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 100), (p_sku_002, "DEMO-SKU-002", 50)])
+        insert_official_po(conn, "ABSENTPO001", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_001, "DEMO-SKU-001", 100), (p_sku_002, "DEMO-SKU-002", 50)])
         conn.commit()
         absent_csv_rows = [grow(GrnNumber="ABSENTGRN001", PurchaseOrderNumber="ABSENTPO001", FacilityName="TESTFAC", ReceivedQty="100")]
-        _, absent_grns = stage_and_verify(conn, absent_csv_rows, scootsy_id, "synthetic_absent.csv")
+        _, absent_grns = stage_and_verify(conn, absent_csv_rows, demo_customer_id, "synthetic_absent.csv")
         absent_grn = absent_grns["ABSENTGRN001"]
         ok &= check("absent-product GRN verified", absent_grn["review_status"] == "verified", str(absent_grn))
         r5 = grn_posting.post_staged_grns(conn, absent_grn["batch_id"], [absent_grn["staged_grn_id"]])
@@ -449,12 +449,12 @@ def run():
         print("\n--- Negative inventory: allowed, flagged, canonical product_id ---")
         neg_loc_id = conn.execute("INSERT INTO locations (name, type) VALUES ('Neg Test Loc', 'own_facility') RETURNING id").fetchone()["id"]
         conn.commit()
-        insert_official_po(conn, "NEGPO001", scootsy_id, neg_loc_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_003, "DEMO-SKU-003", 200)])
+        insert_official_po(conn, "NEGPO001", demo_customer_id, neg_loc_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_003, "DEMO-SKU-003", 200)])
         conn.commit()
         opening_balance(conn, p_sku_003, neg_loc_id, 100)
         conn.commit()
         neg_csv_rows = [grow(GrnNumber="NEGGRN001", PurchaseOrderNumber="NEGPO001", FacilityName="TESTFAC", SkuCode="DEMO-SKU-003", SkuDescription="Drizzl Mixed Berry | Probiotic Soda | 250 ml", ReceivedQty="200")]
-        _, neg_grns = stage_and_verify(conn, neg_csv_rows, scootsy_id, "synthetic_neg.csv")
+        _, neg_grns = stage_and_verify(conn, neg_csv_rows, demo_customer_id, "synthetic_neg.csv")
         neg_grn = neg_grns["NEGGRN001"]
         ok &= check("negative-scenario GRN verified", neg_grn["review_status"] == "verified", str(neg_grn))
         flags_before = table_count(conn, "inventory_flags")
@@ -469,16 +469,16 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Multi-GRN atomicity: 3 succeed together ---")
-        insert_official_po(conn, "ATOMPO_A", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
-        insert_official_po(conn, "ATOMPO_B", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
-        insert_official_po(conn, "ATOMPO_C", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
+        insert_official_po(conn, "ATOMPO_A", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
+        insert_official_po(conn, "ATOMPO_B", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
+        insert_official_po(conn, "ATOMPO_C", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
         conn.commit()
         atom_rows = [
             grow(GrnNumber="ATOMGRN_A", PurchaseOrderNumber="ATOMPO_A", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="10"),
             grow(GrnNumber="ATOMGRN_B", PurchaseOrderNumber="ATOMPO_B", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="10"),
             grow(GrnNumber="ATOMGRN_C", PurchaseOrderNumber="ATOMPO_C", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="10"),
         ]
-        atom_batch_id, atom_grns = stage_and_verify(conn, atom_rows, scootsy_id, "synthetic_atomic.csv")
+        atom_batch_id, atom_grns = stage_and_verify(conn, atom_rows, demo_customer_id, "synthetic_atomic.csv")
         ok &= check("all 3 atomic-test GRNs verified", all(g["review_status"] == "verified" for g in atom_grns.values()), str(atom_grns))
         ids3 = [atom_grns[n]["staged_grn_id"] for n in ("ATOMGRN_A", "ATOMGRN_B", "ATOMGRN_C")]
         grn_before = table_count(conn, "grn_receipts")
@@ -489,8 +489,8 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Multi-GRN atomicity: controlled failure -> 0 of 3 post ---")
-        insert_official_po(conn, "ATOMPO_D", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
-        insert_official_po(conn, "ATOMPO_E", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
+        insert_official_po(conn, "ATOMPO_D", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
+        insert_official_po(conn, "ATOMPO_E", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 10)])
         conn.commit()
         fail_rows = [
             grow(GrnNumber="ATOMGRN_D", PurchaseOrderNumber="ATOMPO_D", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="10"),
@@ -498,7 +498,7 @@ def run():
             # F targets a nonexistent PO -> guaranteed quarantined/unverified
             grow(GrnNumber="ATOMGRN_F", PurchaseOrderNumber="ATOMPO_NOPE", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="10"),
         ]
-        fail_batch_id, fail_grns = stage_and_verify(conn, fail_rows, scootsy_id, "synthetic_atomic_fail.csv")
+        fail_batch_id, fail_grns = stage_and_verify(conn, fail_rows, demo_customer_id, "synthetic_atomic_fail.csv")
         ok &= check("D, E verified; F quarantined", fail_grns["ATOMGRN_D"]["review_status"] == "verified" and fail_grns["ATOMGRN_E"]["review_status"] == "verified" and fail_grns["ATOMGRN_F"]["review_status"] == "quarantined")
         ids_fail = [fail_grns[n]["staged_grn_id"] for n in ("ATOMGRN_D", "ATOMGRN_E", "ATOMGRN_F")]
         grn_before_fail = table_count(conn, "grn_receipts")
@@ -520,16 +520,16 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- Active-GRN-for-PO conflict ---")
-        insert_official_po(conn, "SHAREDPO001", scootsy_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 100)])
+        insert_official_po(conn, "SHAREDPO001", demo_customer_id, bangalore_id, "TESTFAC", "DEMO-SUPPLIER-001", "DRIZZL DEMO VENDOR", [(p_sku_004, "DEMO-SKU-004", 100)])
         conn.commit()
         shared_rows_1 = [grow(GrnNumber="SHAREDGRN_1", PurchaseOrderNumber="SHAREDPO001", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="40")]
-        shared_batch_1, shared_grns_1 = stage_and_verify(conn, shared_rows_1, scootsy_id, "synthetic_shared_1.csv")
+        shared_batch_1, shared_grns_1 = stage_and_verify(conn, shared_rows_1, demo_customer_id, "synthetic_shared_1.csv")
         r9 = grn_posting.post_staged_grns(conn, shared_batch_1, [shared_grns_1["SHAREDGRN_1"]["staged_grn_id"]])
         ok &= check("first GRN against SHAREDPO001 posts", len(r9["posted"]) == 1, str(r9))
         conn.commit()
 
         shared_rows_2 = [grow(GrnNumber="SHAREDGRN_2", PurchaseOrderNumber="SHAREDPO001", FacilityName="TESTFAC", SkuCode="DEMO-SKU-004", SkuDescription="Drizzl Lemon & Mint | Probiotic Soda | 250 ml", ReceivedQty="30")]
-        shared_batch_2, shared_grns_2 = stage_and_verify(conn, shared_rows_2, scootsy_id, "synthetic_shared_2.csv")
+        shared_batch_2, shared_grns_2 = stage_and_verify(conn, shared_rows_2, demo_customer_id, "synthetic_shared_2.csv")
         po_before_conflict = table_count(conn, "grn_receipts")
         r10 = grn_posting.post_staged_grns(conn, shared_batch_2, [shared_grns_2["SHAREDGRN_2"]["staged_grn_id"]])
         ok &= check("second GRN against same PO is rejected (active_grn_for_po_already_exists)", bool(r10["rejected"]), str(r10))

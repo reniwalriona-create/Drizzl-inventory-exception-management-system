@@ -6,7 +6,7 @@ whole point is confirming the actual migration/seed landed correctly.
 
 Runs against a disposable PostgreSQL database, never the development database.
 Checks only that the *specific* expected rows exist and resolve correctly
--- never asserts a total row count on master_products or on Scootsy's
+-- never asserts a total row count on master_products or on Demo Commerce's
 mapping count, since more products/mappings will be added later and this
 script should keep passing when they are.
 
@@ -34,7 +34,7 @@ EXPECTED_PRODUCTS = [
     ("9000000000007", "Drizzl Probiotic Sparkling Water - Lemon & Mint", "250 ml"),
 ]
 
-EXPECTED_SCOOTSY_MAPPINGS = [
+EXPECTED_DEMO_CUSTOMER_MAPPINGS = [
     ("9000000000001", "DEMO-SKU-001"),
     ("9000000000002", "DEMO-SKU-002"),
     ("9000000000003", "DEMO-SKU-003"),
@@ -44,11 +44,11 @@ EXPECTED_SCOOTSY_MAPPINGS = [
 ]
 
 UNMAPPED_BARCODE = "9000000000007"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 
 
-def get_scootsy_id(conn):
-    row = conn.execute("SELECT id FROM customers WHERE name = ?", (SCOOTSY_NAME,)).fetchone()
+def get_demo_customer_id(conn):
+    row = conn.execute("SELECT id FROM customers WHERE name = ?", (DEMO_CUSTOMER_NAME,)).fetchone()
     return row["id"] if row else None
 
 
@@ -80,38 +80,38 @@ def check_barcodes_unique(conn, failures):
             failures.append(f"  barcode {barcode} appears {n} times, expected exactly 1")
 
 
-def check_scootsy_mappings(conn, scootsy_id, failures):
-    for barcode, external_sku in EXPECTED_SCOOTSY_MAPPINGS:
-        resolved = catalog.resolve_customer_sku(conn, scootsy_id, external_sku)
+def check_demo_customer_mappings(conn, demo_customer_id, failures):
+    for barcode, external_sku in EXPECTED_DEMO_CUSTOMER_MAPPINGS:
+        resolved = catalog.resolve_customer_sku(conn, demo_customer_id, external_sku)
         if resolved is None:
-            failures.append(f"  Scootsy SKU {external_sku} did not resolve to any product (expected barcode {barcode})")
+            failures.append(f"  Demo Commerce SKU {external_sku} did not resolve to any product (expected barcode {barcode})")
         elif resolved["barcode"] != barcode:
-            failures.append(f"  Scootsy SKU {external_sku} resolved to barcode {resolved['barcode']}, expected {barcode}")
+            failures.append(f"  Demo Commerce SKU {external_sku} resolved to barcode {resolved['barcode']}, expected {barcode}")
 
 
-def check_specific_resolutions(conn, scootsy_id, failures):
+def check_specific_resolutions(conn, demo_customer_id, failures):
     cases = [("DEMO-SKU-001", "9000000000001"), ("DEMO-SKU-006", "9000000000006")]
     for external_sku, expected_barcode in cases:
-        resolved = catalog.resolve_customer_sku(conn, scootsy_id, external_sku)
+        resolved = catalog.resolve_customer_sku(conn, demo_customer_id, external_sku)
         if resolved is None or resolved["barcode"] != expected_barcode:
             got = resolved["barcode"] if resolved else None
-            failures.append(f"  Scootsy SKU {external_sku}: expected barcode {expected_barcode}, got {got}")
+            failures.append(f"  Demo Commerce SKU {external_sku}: expected barcode {expected_barcode}, got {got}")
 
 
-def check_unmapped_product_exists_independently(conn, scootsy_id, failures):
+def check_unmapped_product_exists_independently(conn, demo_customer_id, failures):
     product = catalog.get_master_product_by_barcode(conn, UNMAPPED_BARCODE)
     if product is None:
-        failures.append(f"  master product {UNMAPPED_BARCODE} should exist even with no Scootsy mapping, but wasn't found")
+        failures.append(f"  master product {UNMAPPED_BARCODE} should exist even with no Demo Commerce mapping, but wasn't found")
         return
-    mappings = catalog.list_customer_sku_mappings(conn, scootsy_id)
+    mappings = catalog.list_customer_sku_mappings(conn, demo_customer_id)
     has_mapping = any(m["barcode"] == UNMAPPED_BARCODE for m in mappings)
     if has_mapping:
-        failures.append(f"  {UNMAPPED_BARCODE} unexpectedly has a Scootsy mapping -- should have none yet")
+        failures.append(f"  {UNMAPPED_BARCODE} unexpectedly has a Demo Commerce mapping -- should have none yet")
 
 
-def check_unknown_sku_no_autocreate(conn, scootsy_id, failures):
+def check_unknown_sku_no_autocreate(conn, demo_customer_id, failures):
     before = conn.execute("SELECT COUNT(*) AS n FROM master_products").fetchone()["n"]
-    resolved = catalog.resolve_customer_sku(conn, scootsy_id, "TOTALLY-UNKNOWN-SKU-XYZ")
+    resolved = catalog.resolve_customer_sku(conn, demo_customer_id, "TOTALLY-UNKNOWN-SKU-XYZ")
     after = conn.execute("SELECT COUNT(*) AS n FROM master_products").fetchone()["n"]
     if resolved is not None:
         failures.append(f"  unknown SKU unexpectedly resolved to something: {resolved}")
@@ -119,14 +119,14 @@ def check_unknown_sku_no_autocreate(conn, scootsy_id, failures):
         failures.append(f"  master_products row count changed from {before} to {after} just from a lookup -- should never write")
 
 
-def check_duplicate_mapping_rejected(conn, scootsy_id, failures):
+def check_duplicate_mapping_rejected(conn, demo_customer_id, failures):
     """Attempts a real duplicate insert to prove the DB constraint exists,
     then rolls back to a savepoint so nothing persists and the connection
     is left in a clean, usable state afterward."""
     product = catalog.get_master_product_by_barcode(conn, "9000000000001")
     conn.execute("SAVEPOINT dup_check")
     try:
-        catalog.add_customer_sku_mapping(conn, scootsy_id, product["product_id"], "DEMO-SKU-001")
+        catalog.add_customer_sku_mapping(conn, demo_customer_id, product["product_id"], "DEMO-SKU-001")
         conn.execute("ROLLBACK TO SAVEPOINT dup_check")
         failures.append("  inserting a duplicate (customer_id, external_sku) mapping succeeded -- expected a constraint violation")
     except psycopg2.errors.UniqueViolation:
@@ -145,8 +145,8 @@ def check_reseed_idempotent(conn, failures):
     conn.executescript(CATALOG_MIGRATION_PATH.read_text())
     conn.commit()
     check_products_exist(conn, failures)
-    scootsy_id = get_scootsy_id(conn)
-    check_scootsy_mappings(conn, scootsy_id, failures)
+    demo_customer_id = get_demo_customer_id(conn)
+    check_demo_customer_mappings(conn, demo_customer_id, failures)
 
 
 def check_legacy_still_works(conn, failures):
@@ -170,18 +170,18 @@ def run():
     conn = bootstrap_connection(TEST_DB_NAME)
     failures = []
     try:
-        scootsy_id = get_scootsy_id(conn)
-        if scootsy_id is None:
-            print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
+        demo_customer_id = get_demo_customer_id(conn)
+        if demo_customer_id is None:
+            print("FAILED: Demo Commerce customer not found -- cannot run the rest of the checks.")
             return False
 
         check_products_exist(conn, failures)
         check_barcodes_unique(conn, failures)
-        check_scootsy_mappings(conn, scootsy_id, failures)
-        check_specific_resolutions(conn, scootsy_id, failures)
-        check_unmapped_product_exists_independently(conn, scootsy_id, failures)
-        check_unknown_sku_no_autocreate(conn, scootsy_id, failures)
-        check_duplicate_mapping_rejected(conn, scootsy_id, failures)
+        check_demo_customer_mappings(conn, demo_customer_id, failures)
+        check_specific_resolutions(conn, demo_customer_id, failures)
+        check_unmapped_product_exists_independently(conn, demo_customer_id, failures)
+        check_unknown_sku_no_autocreate(conn, demo_customer_id, failures)
+        check_duplicate_mapping_rejected(conn, demo_customer_id, failures)
         check_reseed_idempotent(conn, failures)
         check_legacy_still_works(conn, failures)
     finally:
@@ -194,7 +194,7 @@ def run():
     else:
         print(
             f"PASSED -- all {len(EXPECTED_PRODUCTS)} expected master products, "
-            f"all {len(EXPECTED_SCOOTSY_MAPPINGS)} expected Scootsy mappings, the unmapped-product case, "
+            f"all {len(EXPECTED_DEMO_CUSTOMER_MAPPINGS)} expected Demo Commerce mappings, the unmapped-product case, "
             "unknown-SKU no-autocreate, duplicate-mapping rejection, re-seed idempotency, "
             "and legacy-table compatibility all check out."
         )

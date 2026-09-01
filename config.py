@@ -16,7 +16,7 @@ APP_ENV controls the split:
     db.py has always used.
 
 Real secrets are never committed -- see .env.example for the documented
-list of variables and start_server.sh / the README for how to set them.
+list of variables and TECHNICAL_README.md for setup instructions.
 """
 import os
 import sys

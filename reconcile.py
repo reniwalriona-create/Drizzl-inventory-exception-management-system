@@ -157,7 +157,7 @@ def current_balance_by_product(conn, location_id, product_id):
     product_id -- a legacy/manual movement (product_id IS NULL) never
     contributes here, and this never contributes to current_balance()'s
     legacy sku_code-keyed total either. The two identity spaces are
-    separate pools during the transition (see PROJECT_HANDOFF.md) -- not
+    separate pools during the transition (see TECHNICAL_README.md) -- not
     an oversight, a deliberate refusal to guess a legacy-SKU-to-
     product_id mapping retroactively. Does NOT hide an exact-zero
     balance, same reasoning as current_balance()."""
@@ -203,7 +203,7 @@ def committed_quantity(conn):
     committed_by_location_product() instead -- stock_by_location() uses
     that one, product_id-keyed, to merge commitment onto canonical rows;
     committed_by_location_sku() stays reserved for the legacy/manual path.
-    See PROJECT_HANDOFF.md.
+    See TECHNICAL_README.md.
 
     Release rule, two branches (Phase 8):
       canonical PO line (product_id IS NOT NULL): the moment ANY
@@ -278,7 +278,7 @@ def committed_by_location_product(conn):
     stock_by_location() uses to merge commitment onto a canonical
     (product_id-grouped) physical stock row, so that merge never depends
     on sku_code string equality -- product_id is the true internal
-    inventory identity (Phase 8, see PROJECT_HANDOFF.md). Returns a plain
+    inventory identity (Phase 8, see TECHNICAL_README.md). Returns a plain
     {(location, product_id): qty} dict."""
     by_key = {}
     for r in committed_quantity(conn):
@@ -639,7 +639,7 @@ def po_vs_received_shortfall(conn, sku_code=None):
     ordered quantity been received (sold) yet? Only meaningful for POs
     whose PDF has actually been parsed (stub POs have no line items).
     No location filter -- a PO/GRN isn't tied to a specific Drizzl
-    location, it's what Scootsy received.
+    location, it's what Demo Commerce received.
 
     Restricted to product_id IS NULL on BOTH sides (the PO line and the
     matched GRN line) so this can never overlap with a canonical
@@ -687,7 +687,7 @@ def official_po_grn_discrepancies(conn, po_number):
     (official purchase_orders/po_line_items vs. grn_receipts/
     grn_line_items), so a separately-uploaded document is no longer
     needed to know there's a shortfall, only to know *why* (out of scope
-    here -- see PROJECT_HANDOFF.md's "what's left" list for the future
+    here -- see TECHNICAL_README.md's "what's left" list for the future
     PR/DN workflow).
 
     Operates strictly on OFFICIAL posted records, never staging tables --
@@ -852,8 +852,8 @@ def po_grn_pairs_needing_discrepancy_notes(conn, product_id=None, location=None)
 
 def po_quantity_by_facility(conn, sku_code=None, product_id=None, date_from=None, date_to=None):
     """Total ordered quantity (summed across every SKU on the PO) per
-    Scootsy receiving facility -- feeds the "PO quantity by warehouse"
-    chart. Facility is the Scootsy warehouse a PO shipped to (e.g.
+    Demo Commerce receiving facility -- feeds the "PO quantity by warehouse"
+    chart. Facility is the Demo Commerce warehouse a PO shipped to (e.g.
     Hyderabad, Mumbai), not one of Drizzl's own `locations`."""
     query = """
         SELECT COALESCE(po.facility_name, 'Unknown') AS facility, SUM(p.qty) AS total_qty
@@ -934,7 +934,7 @@ def po_quantity_by_flavor(conn, date_from=None, date_to=None):
     far is a single-can SKU (verified: qty * unit_base_cost ==
     taxable_value exactly). If a "Pack of 6" SKU ever appears on a real
     PO, check that same math before trusting this total -- we don't yet
-    know whether Scootsy's PDF would report that line's qty in packs or
+    know whether Demo Commerce's PDF would report that line's qty in packs or
     in individual cans, and summing the wrong one in would silently
     understate or overstate the real can count.
 
@@ -1088,7 +1088,7 @@ def voided_entries(conn):
 
 
 def purchase_orders_by_facility(conn, facility=None):
-    """Every parsed PO, optionally narrowed to one Scootsy receiving
+    """Every parsed PO, optionally narrowed to one Demo Commerce receiving
     facility (e.g. "DEMO FACILITY A", or whatever a Hyderabad facility's code
     turns out to be). Unlike po_vs_received_shortfall(), this lists
     every PO regardless of whether it's fully received yet -- it answers

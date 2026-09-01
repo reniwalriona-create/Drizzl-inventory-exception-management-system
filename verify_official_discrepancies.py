@@ -74,7 +74,7 @@ def get_test_connection():
     return conn
 
 
-def get_customer_id(conn, name="Scootsy Logistics Private Limited"):
+def get_customer_id(conn, name="Demo Commerce Logistics Private Limited"):
     return conn.execute("SELECT id FROM customers WHERE name = ?", (name,)).fetchone()["id"]
 
 
@@ -245,7 +245,7 @@ def run():
 
         # -----------------------------------------------------------------
         print("\n--- 8: an already-collapsed duplicate-representation line isn't re-doubled ---")
-        # Simulates the real Scootsy CSV's DNQuantity=0/positive-pair case,
+        # Simulates the real Demo Commerce CSV's DNQuantity=0/positive-pair case,
         # already normalized to one official line of 203 by Phase 6/8 --
         # this function must not re-sum it into 406.
         po_id = insert_official_po(conn, "PO-COLLAPSED", customer_id, [(p_passion, "DEMO-SKU-001", 203)])

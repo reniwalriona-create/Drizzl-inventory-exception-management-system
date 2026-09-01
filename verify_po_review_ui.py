@@ -33,7 +33,7 @@ from db import get_connection
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "synthetic" / "demo_po_01.csv"
 REVIEW_FIXTURE_NAME = "demo_po_review_ui.csv"
-SCOOTSY_NAME = "Scootsy Logistics Private Limited"
+DEMO_CUSTOMER_NAME = "Demo Commerce Logistics Private Limited"
 
 REAL_HEADER = [
     "PoNumber", "Entity", "FacilityId", "FacilityName", "City", "PoCreatedAt", "PoModifiedAt",
@@ -44,7 +44,7 @@ REAL_HEADER = [
 ]
 
 BASE_ROW = {
-    "PoNumber": "UITEST0001", "Entity": "SCOOTSY LOGISTICS PRIVATE LIMITED",
+    "PoNumber": "UITEST0001", "Entity": "DEMO COMMERCE LOGISTICS PRIVATE LIMITED",
     "FacilityId": "TST", "FacilityName": "TEST FC", "City": "TESTCITY",
     "PoCreatedAt": "2026-08-15 00:00:00", "PoModifiedAt": "2026-08-15 00:00:00",
     "Status": "CONFIRMED", "SupplierCode": "DEMO-SUPPLIER-001", "VendorName": "DRIZZL DEMO VENDOR",
@@ -175,11 +175,11 @@ def _run_checks():
     batch_id2 = batch_id_from_redirect(resp2)
     if batch_id2 != batch_id:
         failures.append(f"  upload 3: re-upload should reuse batch {batch_id}, got {batch_id2}")
-    if table_count(conn, "po_import_batches", "customer_id = (SELECT id FROM customers WHERE name = ?) AND source_filename = ?", (SCOOTSY_NAME, REVIEW_FIXTURE_NAME)) != 1:
+    if table_count(conn, "po_import_batches", "customer_id = (SELECT id FROM customers WHERE name = ?) AND source_filename = ?", (DEMO_CUSTOMER_NAME, REVIEW_FIXTURE_NAME)) != 1:
         failures.append("  upload 3: re-upload created a second batch instead of reusing the existing one")
 
     # 4. Fatal invalid CSV (mixed entities) leaves no partial data
-    mixed_path = write_csv([row(Entity="SCOOTSY LOGISTICS PRIVATE LIMITED"), row(PoNumber="UITEST0002", Entity="SOME OTHER COMPANY")])
+    mixed_path = write_csv([row(Entity="DEMO COMMERCE LOGISTICS PRIVATE LIMITED"), row(PoNumber="UITEST0002", Entity="SOME OTHER COMPANY")])
     batches_before_fatal = table_count(conn, "po_import_batches")
     resp3 = upload_csv(client, mixed_path, filename="mixed_entity.csv")
     if resp3.status_code != 302:

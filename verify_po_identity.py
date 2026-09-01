@@ -26,8 +26,8 @@ CHILD_FK_TABLES = ["po_line_items", "appointments", "grn_receipts", "debit_notes
 MIGRATION_PATH = Path(__file__).parent / "migrations" / "002_po_identity_foundation.sql"
 
 
-def get_scootsy_id(conn):
-    row = conn.execute("SELECT id FROM customers WHERE name = ?", ("Scootsy Logistics Private Limited",)).fetchone()
+def get_demo_customer_id(conn):
+    row = conn.execute("SELECT id FROM customers WHERE name = ?", ("Demo Commerce Logistics Private Limited",)).fetchone()
     return row["id"] if row else None
 
 
@@ -70,7 +70,7 @@ def check_child_fks_intact(conn, failures):
             failures.append(f"  {table}_po_number_fkey references {row['column_name']!r}, expected po_number")
 
 
-def check_legacy_query_and_insert_pattern(conn, scootsy_id, failures):
+def check_legacy_query_and_insert_pattern(conn, demo_customer_id, failures):
     """Proves both the read side (a typical reconcile.py/app.py-style
     query) and the write side (_ensure_po_stub()'s exact INSERT ... ON
     CONFLICT(po_number) pattern) still work unmodified after the
@@ -85,11 +85,11 @@ def check_legacy_query_and_insert_pattern(conn, scootsy_id, failures):
     try:
         conn.execute(
             "INSERT INTO purchase_orders (po_number, customer_id) VALUES (?, ?) ON CONFLICT (po_number) DO NOTHING",
-            ("VERIFY-LEGACY-STUB-PO", scootsy_id),
+            ("VERIFY-LEGACY-STUB-PO", demo_customer_id),
         )
         conn.execute(
             "INSERT INTO purchase_orders (po_number, customer_id) VALUES (?, ?) ON CONFLICT (po_number) DO NOTHING",
-            ("VERIFY-LEGACY-STUB-PO", scootsy_id),
+            ("VERIFY-LEGACY-STUB-PO", demo_customer_id),
         )
         row = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders WHERE po_number = ?", ("VERIFY-LEGACY-STUB-PO",)).fetchone()
         if row["n"] != 1:
@@ -100,7 +100,7 @@ def check_legacy_query_and_insert_pattern(conn, scootsy_id, failures):
         conn.execute("ROLLBACK TO SAVEPOINT legacy_insert_check")
 
 
-def check_round_trip_and_resolution(conn, scootsy_id, failures):
+def check_round_trip_and_resolution(conn, demo_customer_id, failures):
     """Covers: PO metadata preserved, po_number <-> external_po_number
     resolve to the same order, a second distinct po_number for the same
     customer is valid, whitespace normalization, and unknown PO -> None.
@@ -112,10 +112,10 @@ def check_round_trip_and_resolution(conn, scootsy_id, failures):
             INSERT INTO purchase_orders (po_number, customer_id, po_date, vendor_name, grand_total)
             VALUES (?, ?, ?, ?, ?)
             """,
-            ("VERIFY-PO-0001", scootsy_id, "2026-08-15", "DRIZZL DEMO VENDOR", 1234.5),
+            ("VERIFY-PO-0001", demo_customer_id, "2026-08-15", "DRIZZL DEMO VENDOR", 1234.5),
         )
 
-        by_customer_number = po_helpers.get_po_by_customer_and_number(conn, scootsy_id, "VERIFY-PO-0001")
+        by_customer_number = po_helpers.get_po_by_customer_and_number(conn, demo_customer_id, "VERIFY-PO-0001")
         if by_customer_number is None:
             failures.append("  get_po_by_customer_and_number() did not find the just-inserted PO")
         else:
@@ -128,20 +128,20 @@ def check_round_trip_and_resolution(conn, scootsy_id, failures):
             if by_id is None or by_id["po_number"] != "VERIFY-PO-0001":
                 failures.append("  get_po_by_id() did not resolve back to the same PO")
 
-        padded = po_helpers.resolve_po_identity(conn, scootsy_id, "  VERIFY-PO-0001  ")
+        padded = po_helpers.resolve_po_identity(conn, demo_customer_id, "  VERIFY-PO-0001  ")
         if padded is None:
             failures.append("  resolve_po_identity() did not normalize surrounding whitespace correctly")
 
-        unknown = po_helpers.resolve_po_identity(conn, scootsy_id, "TOTALLY-UNKNOWN-PO-XYZ")
+        unknown = po_helpers.resolve_po_identity(conn, demo_customer_id, "TOTALLY-UNKNOWN-PO-XYZ")
         if unknown is not None:
             failures.append(f"  unknown PO number unexpectedly resolved to something: {unknown}")
 
         # A second, different po_number for the same customer must be valid.
         conn.execute(
             "INSERT INTO purchase_orders (po_number, customer_id) VALUES (?, ?)",
-            ("VERIFY-PO-0002", scootsy_id),
+            ("VERIFY-PO-0002", demo_customer_id),
         )
-        second = po_helpers.get_po_by_customer_and_number(conn, scootsy_id, "VERIFY-PO-0002")
+        second = po_helpers.get_po_by_customer_and_number(conn, demo_customer_id, "VERIFY-PO-0002")
         if second is None:
             failures.append("  a second distinct po_number for the same customer was not accepted")
 
@@ -150,7 +150,7 @@ def check_round_trip_and_resolution(conn, scootsy_id, failures):
         try:
             conn.execute(
                 "INSERT INTO purchase_orders (po_number, customer_id) VALUES (?, ?)",
-                ("VERIFY-PO-0001", scootsy_id),
+                ("VERIFY-PO-0001", demo_customer_id),
             )
             conn.execute("ROLLBACK TO SAVEPOINT duplicate_check")
             failures.append("  inserting a duplicate (customer_id, po_number) succeeded -- expected a constraint violation")
@@ -180,17 +180,17 @@ def run():
     conn = bootstrap_connection(TEST_DB_NAME)
     failures = []
     try:
-        scootsy_id = get_scootsy_id(conn)
-        if scootsy_id is None:
-            print("FAILED: Scootsy customer not found -- cannot run the rest of the checks.")
+        demo_customer_id = get_demo_customer_id(conn)
+        if demo_customer_id is None:
+            print("FAILED: Demo Commerce customer not found -- cannot run the rest of the checks.")
             return False
 
         row_count_before = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders").fetchone()["n"]
 
         check_po_id_is_real_pk(conn, failures)
         check_child_fks_intact(conn, failures)
-        check_legacy_query_and_insert_pattern(conn, scootsy_id, failures)
-        check_round_trip_and_resolution(conn, scootsy_id, failures)
+        check_legacy_query_and_insert_pattern(conn, demo_customer_id, failures)
+        check_round_trip_and_resolution(conn, demo_customer_id, failures)
         check_reapply_migration_idempotent(conn, failures)
 
         row_count_after = conn.execute("SELECT COUNT(*) AS n FROM purchase_orders").fetchone()["n"]

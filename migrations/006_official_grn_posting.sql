@@ -9,7 +9,7 @@
 -- and drops the legacy sku_code->products(sku_code) FKs that would
 -- otherwise force either a fake legacy products row per Master Product
 -- barcode, or a NULL sku_code for every canonical row (both rejected --
--- see PROJECT_HANDOFF.md and grn_posting.py).
+-- see TECHNICAL_README.md and grn_posting.py).
 --
 -- Idempotent -- safe to run more than once. Wrapped in one transaction so
 -- a failure partway through leaves the database exactly as it was.
@@ -130,7 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movem
 
 -- Step 7: inventory_flags canonical identity -- lets a future operator
 -- see which Master Product went negative without joining back through
--- movement_id, which is deliberately unFK'd (see PROJECT_HANDOFF.md's
+-- movement_id, which is deliberately unFK'd (see TECHNICAL_README.md's
 -- Phase 4 writeup on why that FK was removed).
 ALTER TABLE inventory_flags ADD COLUMN IF NOT EXISTS product_id INTEGER;
 DO $$

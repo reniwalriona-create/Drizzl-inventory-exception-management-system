@@ -3,7 +3,7 @@
 -- keeping po_number as temporary backwards-compatible scaffolding -- the
 -- five existing child tables (po_line_items, appointments, grn_receipts,
 -- discrepancy_notes, debit_notes) still reference po_number, not po_id,
--- until a later phase migrates them. See PROJECT_HANDOFF.md.
+-- until a later phase migrates them. See TECHNICAL_README.md.
 --
 -- Done now specifically because purchase_orders (and all five child
 -- tables) currently have zero rows -- this is the safest possible moment

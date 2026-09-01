@@ -18,7 +18,7 @@ re-resolves the customer SKU -- that mapping was already reviewed at
 staging time). item_code/item_desc are mirrored from external_sku/
 external_sku_description on every posted line specifically so the
 existing item_code-keyed commitment/GRN-matching code in reconcile.py
-keeps matching without modification -- see PROJECT_HANDOFF.md and
+keeps matching without modification -- see TECHNICAL_README.md and
 reconcile.committed_quantity(). product_id itself is not used as a join
 key by any of that legacy code yet; it's additive canonical identity.
 
@@ -324,7 +324,7 @@ def post_staged_purchase_orders(conn, batch_id, staged_po_ids):
     batch_id) into the official ledger. All-or-nothing across the whole
     selection: if ANY not-yet-posted staged PO in the selection isn't
     ready or conflicts with an existing official PO, NOTHING is written
-    for ANY of them (see PROJECT_HANDOFF.md). Already-posted staged POs in
+    for ANY of them (see TECHNICAL_README.md). Already-posted staged POs in
     the selection are a harmless no-op and never block the rest.
 
     Returns:
