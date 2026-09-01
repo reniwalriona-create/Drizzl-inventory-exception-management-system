@@ -17,6 +17,22 @@
     at {{ po.posted_at }}. This is now an official record and commitment -- its Drizzl source can no longer be
     changed from this staging screen.
   </p>
+  {% if official_po and official_po.voided %}
+  <p class="flash flash-warning">This CSV-posted PO is VOIDED{% if official_po.voided_at %} ({{ official_po.voided_at }}){% endif %}: {{ official_po.void_reason }}</p>
+  <form method="post" action="{{ url_for('restore_po_route', po_number=po.external_po_number) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button type="submit">Restore posted PO</button>
+  </form>
+  {% else %}
+  <form method="post" action="{{ url_for('void_po_route', po_number=po.external_po_number) }}" class="row" style="align-items:flex-end; margin-top:14px;"
+        onsubmit="return confirm('Void this CSV-posted PO? The upload and official record stay visible for audit, but its commitment is excluded until restored.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <div class="field" style="margin-bottom:0;"><input type="text" name="reason" placeholder="Reason for voiding" required style="width:240px;"></div>
+    <button type="submit" style="background:var(--warn);">Void posted PO</button>
+  </form>
+  {% endif %}
 </div>
 {% elif po.review_status == "ready" %}
 <div class="panel callout-warning">

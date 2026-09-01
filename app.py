@@ -1007,7 +1007,7 @@ def assign_po_location_route(po_number):
         flash(str(e), "error")
     finally:
         conn.close()
-    return redirect(url_for("lookup", q=po_number))
+    return redirect(_safe_next_url(request.form.get("next")) or url_for("lookup", q=po_number))
 
 
 @app.route("/grn/<grn_number>/assign-location", methods=["POST"])
@@ -1045,7 +1045,7 @@ def void_po_route(po_number):
         flash(str(e), "error")
     finally:
         conn.close()
-    return redirect(url_for("lookup", q=po_number))
+    return redirect(_safe_next_url(request.form.get("next")) or url_for("lookup", q=po_number))
 
 
 @app.route("/po/<po_number>/restore", methods=["POST"])
@@ -1058,7 +1058,7 @@ def restore_po_route(po_number):
         flash(f"PO {po_number} restored.", "success")
     finally:
         conn.close()
-    return redirect(url_for("lookup", q=po_number))
+    return redirect(_safe_next_url(request.form.get("next")) or url_for("lookup", q=po_number))
 
 
 @app.route("/grn/<grn_number>/void", methods=["POST"])
@@ -1077,7 +1077,7 @@ def void_grn_route(grn_number):
         flash(str(e), "error")
     finally:
         conn.close()
-    return redirect(url_for("lookup", q=grn_number))
+    return redirect(_safe_next_url(request.form.get("next")) or url_for("lookup", q=grn_number))
 
 
 @app.route("/grn/<int:grn_id>/restore", methods=["POST"])
@@ -1098,7 +1098,10 @@ def restore_grn_route(grn_id):
         flash(str(e), "error")
     finally:
         conn.close()
-    return redirect(url_for("lookup", q=grn_number) if grn_number else url_for("dashboard"))
+    return redirect(
+        _safe_next_url(request.form.get("next"))
+        or (url_for("lookup", q=grn_number) if grn_number else url_for("dashboard"))
+    )
 
 
 @app.route("/movements/<int:movement_id>/void", methods=["POST"])
@@ -1406,10 +1409,18 @@ def staged_po_detail(batch_id, staged_po_id):
         staged_po = po_csv_staging.get_staged_po(conn, staged_po_id)
         if staged_po is None or staged_po["batch_id"] != batch_id:
             abort(404, description="This staged PO does not belong to this batch.")
+        official_po = None
+        if staged_po["posted_po_id"]:
+            official_po = conn.execute(
+                "SELECT po_id, po_number, voided, void_reason, voided_at "
+                "FROM purchase_orders WHERE po_id = ?",
+                (staged_po["posted_po_id"],),
+            ).fetchone()
         return render_template(
             "staged_po_detail.html",
             batch=batch,
             po=staged_po,
+            official_po=official_po,
             raw_rows=po_csv_staging.get_staged_po_raw_rows(conn, staged_po_id),
             all_locations=conn.execute("SELECT id, name FROM locations ORDER BY name").fetchall(),
         )
@@ -1679,10 +1690,17 @@ def staged_grn_detail(batch_id, staged_grn_id):
 
         inventory_effect = []
         official_grn = None
+        official_grn_restorable = False
         if grn["posted_grn_id"]:
             official_grn = conn.execute(
                 "SELECT * FROM grn_receipts WHERE grn_id = ?", (grn["posted_grn_id"],)
             ).fetchone()
+            if official_grn and official_grn["voided"]:
+                active_replacement = conn.execute(
+                    "SELECT 1 FROM grn_receipts WHERE supersedes_grn_id = ? AND voided = 0",
+                    (official_grn["grn_id"],),
+                ).fetchone()
+                official_grn_restorable = active_replacement is None
             # Scoped via source_grn_line_item_id -> grn_line_items.grn_id
             # (this staged record's OWN posted_grn_id), not reference_id
             # text -- if the GRN this staged record posted has since
@@ -1718,6 +1736,7 @@ def staged_grn_detail(batch_id, staged_grn_id):
             official_po=official_po,
             official_source_location_name=official_source_location_name,
             official_grn=official_grn,
+            official_grn_restorable=official_grn_restorable,
             inventory_effect=inventory_effect,
             comparison=grn_csv_staging.get_grn_po_comparison(conn, staged_grn_id),
             raw_rows=grn_csv_staging.get_staged_grn_raw_rows(conn, staged_grn_id),

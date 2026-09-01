@@ -63,6 +63,7 @@ def recent_activity(conn, action_type=None, limit=200, date_from=None, date_to=N
         "grn_restored": "GRN restored", "flag_resolved": "Flag resolved",
         "po_location_assigned": "PO source set", "grn_location_assigned": "GRN source set",
         "po_staged_source_assigned": "Batch source set",
+        "location_created": "Location created",
         "po_batch_revalidated": "PO batch checked", "grn_batch_revalidated": "GRN batch checked",
         "discrepancy_csv_upload": "Discrepancy file uploaded",
         "discrepancy_classified": "Discrepancies classified",

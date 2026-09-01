@@ -50,7 +50,16 @@ if not DATABASE_URL:
     # Local dev convenience -- matches db.py's long-standing default of
     # connecting to a local Postgres database named drizzl_inventory via
     # peer/trust auth, no password needed.
-    DATABASE_URL = "dbname=drizzl_inventory"
+    DATABASE_URL = "dbname=drizzl_inventory_portfolio_demo"
+
+# This repository is the sanitized portfolio copy. Never allow it to open the
+# private operational database, including through an accidentally inherited
+# DATABASE_URL environment variable.
+if DATABASE_URL.strip() == "dbname=drizzl_inventory" or DATABASE_URL.rstrip("/").endswith("/drizzl_inventory"):
+    sys.exit(
+        "FATAL: the portfolio project cannot connect to the private drizzl_inventory database. "
+        "Use DATABASE_URL=dbname=drizzl_inventory_portfolio_demo instead."
+    )
 
 # MAX_CONTENT_LENGTH: generous but bounded upload size (Phase 12) -- real
 # GRN/PO documents (PDF or CSV) are at most a few MB; this exists to stop

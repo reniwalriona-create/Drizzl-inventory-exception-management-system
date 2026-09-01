@@ -19,6 +19,30 @@
     staged record is now a locked audit snapshot -- it is no longer revalidated.
   </p>
 </div>
+<div class="panel">
+  <h2 style="margin-top:0;">Correct this CSV-posted GRN</h2>
+  <p class="subtitle">Voiding keeps the uploaded CSV, official GRN, line items, and audit history. Its sale, shortfall, and discrepancy effects become inactive until restored.</p>
+  {% if official_grn and official_grn.voided %}
+  <p class="flash flash-warning">VOIDED{% if official_grn.voided_at %} ({{ official_grn.voided_at }}){% endif %}: {{ official_grn.void_reason }}</p>
+  {% if official_grn_restorable %}
+  <form method="post" action="{{ url_for('restore_grn_route', grn_id=official_grn.grn_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button type="submit">Restore posted GRN</button>
+  </form>
+  {% else %}
+  <p class="subtitle">This historical GRN has an active corrected replacement, so it cannot be restored directly.</p>
+  {% endif %}
+  {% else %}
+  <form method="post" action="{{ url_for('void_grn_route', grn_number=grn.external_grn_number) }}" class="row" style="align-items:flex-end;"
+        onsubmit="return confirm('Void this CSV-posted GRN and deactivate all inventory and discrepancy effects? History will be retained and this can be restored.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <div class="field" style="margin-bottom:0;"><input type="text" name="reason" placeholder="Reason for voiding" required style="width:240px;"></div>
+    <button type="submit" style="background:var(--warn);">Void posted GRN</button>
+  </form>
+  {% endif %}
+</div>
 {% else %}
 <div class="panel callout-warning">
   <form method="post" action="{{ url_for('revalidate_single_grn_route', batch_id=batch.batch_id, staged_grn_id=grn.staged_grn_id) }}" onsubmit="return confirm('Recompute PO verification for this GRN using its existing staged data? This does not reparse the file or affect inventory.');">

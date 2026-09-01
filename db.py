@@ -1,4 +1,4 @@
-"""Database connection helper. Connects to the drizzl_inventory Postgres
+"""Database connection helper. Connects to the drizzl_inventory_portfolio_demo Postgres
 database, creating its tables/seed data from schema_postgres.sql on first use."""
 import psycopg2
 import psycopg2.extras
@@ -8,13 +8,13 @@ import config
 
 # Phase 12: DATABASE_URL (a full libpq connection string/DSN, e.g.
 # "postgresql://user:pass@host:5432/dbname" or the local dev default
-# "dbname=drizzl_inventory") is now the single source of truth for which
+# "dbname=drizzl_inventory_portfolio_demo") is the source of truth for which
 # database to connect to -- config.py resolves it from the environment,
 # with a local-dev fallback. DB_NAME stays exported for anything that
 # still wants just the database's short name (informational only, e.g.
 # db.py's own __main__ printout) -- it is never used to build the actual
 # connection anymore.
-DB_NAME = "drizzl_inventory"
+DB_NAME = "drizzl_inventory_portfolio_demo"
 SCHEMA_PATH = Path(__file__).parent / "schema_postgres.sql"
 # Phase 1 catalog seed (master_products + customer_product_skus). Reuses
 # the migration file directly instead of duplicating its idempotent seed

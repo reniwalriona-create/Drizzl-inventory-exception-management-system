@@ -65,8 +65,9 @@ def run():
         f"demo_{kind}_{number}.csv"
         for number in ("01", "02") for kind in ("po", "grn", "discrepancy")
     }
+    expected_files.update({"demo_po_warehouse_mix.csv", "demo_grn_warehouse_mix.csv"})
     actual_files = {path.name for path in FIXTURES.glob("*.csv")}
-    check(actual_files == expected_files, "fixture directory contains exactly the six principal demo CSVs")
+    check(actual_files == expected_files, "fixture directory contains the six document-chain CSVs and two warehouse-mix CSVs")
 
     print(f"Creating throwaway database {TEST_DB_NAME}...")
     create_database(TEST_DB_NAME)
@@ -179,6 +180,29 @@ def run():
             "Quality issue": Decimal("5"),
             "Short delivery": Decimal("9"),
         }, "dashboard cause totals include all five classified scenarios")
+
+        # Add four exact-receipt shipments to distinct Scootsy destinations so
+        # the warehouse visualization demonstrates a useful distribution.
+        mix_po_path = FIXTURES / "demo_po_warehouse_mix.csv"
+        staged = po_csv_staging.stage_po_csv(conn, mix_po_path, customer_id=customer_id, filename=mix_po_path.name)
+        mix_pos = po_csv_staging.list_staged_pos(conn, staged["batch_id"])
+        check(len(mix_pos) == 4 and all(po["validation_status"] == "valid" for po in mix_pos), "warehouse-mix PO fixture stages four valid destination shipments")
+        mix_po_ids = [po["staged_po_id"] for po in mix_pos]
+        po_csv_staging.assign_source_location(conn, staged["batch_id"], mix_po_ids, location_id)
+        posted = po_posting.post_staged_purchase_orders(conn, staged["batch_id"], mix_po_ids)
+        check(not posted["rejected"] and len(posted["posted"]) == 4, "all four warehouse-mix POs post successfully")
+
+        mix_grn_path = FIXTURES / "demo_grn_warehouse_mix.csv"
+        staged = grn_csv_staging.stage_grn_csv(conn, mix_grn_path, customer_id, filename=mix_grn_path.name)
+        grn_csv_staging.revalidate_grn_batch(conn, staged["batch_id"])
+        mix_grns = grn_csv_staging.list_staged_grns(conn, staged["batch_id"])
+        check(len(mix_grns) == 4 and all(grn["review_status"] == "verified" for grn in mix_grns), "warehouse-mix GRN fixture verifies four receipts")
+        posted = grn_posting.post_staged_grns(conn, staged["batch_id"], [grn["staged_grn_id"] for grn in mix_grns])
+        check(not posted["rejected"] and len(posted["posted"]) == 4, "all four warehouse-mix GRNs post successfully")
+        conn.commit()
+
+        facility_totals = reconcile.po_quantity_by_facility(conn)
+        check(len(facility_totals) == 6, "PO quantity by warehouse visualization contains six Scootsy receiving hubs")
         tracker = {row["po_number"]: row for row in reconcile.po_grn_fulfillment(conn)}
         check(all(tracker[c["po"]]["fulfillment_status"] == "grn_posted_discrepancy" for c in CHAINS), "PO-GRN Tracker includes both completed discrepancy chains")
         for chain in CHAINS:
